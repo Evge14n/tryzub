@@ -1,0 +1,16 @@
+[package]
+name = "tryzub-compiler"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tryzub-lexer = { path = "../lexer" }
+tryzub-parser = { path = "../parser" }
+anyhow = "1.0"
+thiserror = "1.0"
+inkwell = { version = "0.2.0", features = ["llvm15-0"] }
+cranelift = "0.95"
+cranelift-module = "0.95"
+cranelift-jit = "0.95"
+cranelift-native = "0.95"
+target-lexicon = "0.12"

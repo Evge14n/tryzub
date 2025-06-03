@@ -1,0 +1,10 @@
+[package]
+name = "tryzub-vm"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tryzub-lexer = { path = "../lexer" }
+tryzub-parser = { path = "../parser" }
+anyhow = "1.0"
+thiserror = "1.0"

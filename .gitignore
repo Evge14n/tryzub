@@ -1,0 +1,64 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.o
+*.so
+*.dll
+*.exe
+*.out
+*.app
+
+# Test coverage
+*.profraw
+*.profdata
+/coverage/
+
+# Documentation
+/docs/_build/
+/docs/_site/
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Package files
+*.tar.gz
+*.zip
+
+# Tryzub specific
+*.тризуб.cache
+.tryzub-cache/
+/build/
+/dist/
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Benchmarks
+/benches/target/
+/benches/*.txt
+
+# Examples build
+/examples/build/
+/examples/*/target/
