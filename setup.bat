@@ -1,56 +1,51 @@
 @echo off
+chcp 65001 >nul
 echo =======================================
-echo 🇺🇦 Налаштування проекту Тризуб
+echo Tryzub Programming Language Setup
 echo =======================================
 echo.
 
-REM Перевірка Rust
+REM Check Rust
 where rustc >nul 2>nul
 if %errorlevel% neq 0 (
-    echo ❌ Rust не встановлено. Встановлюємо...
-    echo Завантажте та запустіть: https://win.rustup.rs/
+    echo X Rust not installed. Installing...
+    echo Download and run: https://win.rustup.rs/
     pause
     exit /b 1
 ) else (
-    echo ✅ Rust встановлено
+    echo OK Rust installed
     rustc --version
 )
 
-REM Перевірка LLVM
+REM Check LLVM
 where llvm-config >nul 2>nul
 if %errorlevel% neq 0 (
-    echo ❌ LLVM не встановлено. 
-    echo Встановіть через Chocolatey: choco install llvm
-    echo Або завантажте з: https://releases.llvm.org/
-    pause
-    exit /b 1
+    echo X LLVM not installed. 
+    echo Install via Chocolatey: choco install llvm
+    echo Or download from: https://releases.llvm.org/
+    echo.
+    echo Note: LLVM is optional for basic functionality
 ) else (
-    echo ✅ LLVM встановлено
+    echo OK LLVM installed
 )
 
 echo.
-echo 📦 Встановлення додаткових інструментів...
-cargo install cargo-tarpaulin
-cargo install cargo-audit
-cargo install cargo-outdated
-
-echo.
-echo 🔨 Збірка проекту...
+echo Building project...
 cargo build
 
 echo.
-echo 🧪 Запуск тестів...
+echo Running tests...
 cargo test
 
 echo.
-echo ✅ Проект готовий до роботи!
+echo Project is ready!
 echo.
-echo 🚀 Швидкий старт:
-echo    cargo run -- запустити examples\привіт_світ.тризуб
-echo    cargo run -- компілювати examples\привіт_світ.тризуб -в привіт
+echo Quick start:
+echo    cargo run -- run examples\hello_world.tryzub
+echo    cargo run -- compile examples\hello_world.tryzub -o hello
 echo.
-echo 📚 Документація: cargo doc --open
-echo 🔍 Перевірка коду: cargo clippy
-echo 🎨 Форматування: cargo fmt
+echo Documentation: cargo doc --open
+echo Code check: cargo clippy
+echo Format: cargo fmt
 echo.
 pause

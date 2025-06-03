@@ -9,10 +9,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/tryzub-lang/tryzub/actions"><img src="https://github.com/tryzub-lang/tryzub/workflows/CI/badge.svg" alt="CI Status"></a>
+  <!-- <a href="https://github.com/tryzub-lang/tryzub/actions"><img src="https://github.com/tryzub-lang/tryzub/workflows/CI/badge.svg" alt="CI Status"></a>
   <a href="https://github.com/tryzub-lang/tryzub/releases"><img src="https://img.shields.io/github/v/release/tryzub-lang/tryzub" alt="Latest Release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
-  <a href="https://discord.gg/tryzub"><img src="https://img.shields.io/discord/123456789?color=7289da&logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://discord.gg/tryzub"><img src="https://img.shields.io/discord/123456789?color=7289da&logo=discord&logoColor=white" alt="Discord"></a> -->
 </p>
 
 ## 🚀 Про Тризуб

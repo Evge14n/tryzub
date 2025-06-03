@@ -7,14 +7,14 @@ description = "Тризуб - найшвидша україномовна мов
 repository = "https://github.com/tryzub-lang/tryzub"
 license = "MIT"
 
-[workspace]
-members = [
-    "src/lexer",
-    "src/parser", 
-    "src/compiler",
-    "src/vm",
-    "src/runtime",
-]
+# [workspace] - тимчасово відключаємо workspace
+# members = [
+#     "src/lexer",
+#     "src/parser", 
+#     "src/compiler",
+#     "src/vm",
+#     "src/runtime",
+# ]
 
 [dependencies]
 clap = { version = "4.0", features = ["derive"] }
@@ -22,16 +22,16 @@ anyhow = "1.0"
 thiserror = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-inkwell = { version = "0.2.0", features = ["llvm15-0"] }
-cranelift = "0.95"
-cranelift-module = "0.95"
-cranelift-jit = "0.95"
-cranelift-native = "0.95"
+# inkwell = { version = "0.2.0", features = ["llvm15-0"] } # Тимчасово відключено - потребує LLVM
+# cranelift = "0.95"
+# cranelift-module = "0.95"
+# cranelift-jit = "0.95"
+# cranelift-native = "0.95"
 target-lexicon = "0.12"
 indexmap = "2.0"
 unicode-segmentation = "1.10"
 rayon = "1.7"
-mimalloc = { version = "0.1", default-features = false }
+# mimalloc = { version = "0.1", default-features = false }
 
 [profile.release]
 lto = true
