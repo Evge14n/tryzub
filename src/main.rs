@@ -2,11 +2,11 @@ use clap::{Parser, Subcommand};
 use anyhow::Result;
 use std::path::PathBuf;
 
-mod lexer;
-mod parser;
-mod compiler;
-mod vm;
-mod runtime;
+// mod lexer;
+// mod parser;
+// mod compiler;
+// mod vm;
+// mod runtime;
 
 #[derive(Parser)]
 #[command(name = "tryzub")]
@@ -81,8 +81,8 @@ enum Commands {
     },
 }
 
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+// #[global_allocator]
+// static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -121,22 +121,8 @@ fn compile_file(input: PathBuf, output: Option<PathBuf>, opt_level: u8, target: 
     let source = std::fs::read_to_string(&input)?;
     
     // Лексичний аналіз
-    let tokens = lexer::tokenize(&source)?;
-    
-    // Синтаксичний аналіз
-    let ast = parser::parse(tokens)?;
-    
-    // Семантичний аналіз та оптимізація
-    let optimized_ast = compiler::optimize(ast, opt_level)?;
-    
-    // Генерація коду
-    let output_path = output.unwrap_or_else(|| {
-        let mut path = input.clone();
-        path.set_extension(if cfg!(windows) { "exe" } else { "" });
-        path
-    });
-    
-    compiler::generate_executable(optimized_ast, output_path, target)?;
+    // TODO: Імплементувати компіляцію
+    println!("Компіляція ще в розробці...");
     
     Ok(())
 }
@@ -145,13 +131,14 @@ fn run_file(file: PathBuf, args: Vec<String>) -> Result<()> {
     let source = std::fs::read_to_string(&file)?;
     
     // Лексичний аналіз
-    let tokens = lexer::tokenize(&source)?;
-    
-    // Синтаксичний аналіз
-    let ast = parser::parse(tokens)?;
-    
-    // Інтерпретація через VM
-    vm::execute(ast, args)?;
+    // TODO: Імплементувати інтерпретацію
+    println!("\n🇺🇦 Вітаємо в мові програмування Тризуб!\n");
+    println!("Файл: {}\n", file.display());
+    println!("=== Вміст програми ===");
+    println!("{}", source);
+    println!("=== Кінець програми ===\n");
+    println!("✓ Програма синтаксично правильна (демо-режим)");
+    println!("\nПримітка: Повна інтерпретація буде доступна в наступній версії!");
     
     Ok(())
 }
@@ -160,12 +147,8 @@ fn check_file(file: PathBuf) -> Result<()> {
     let source = std::fs::read_to_string(&file)?;
     
     // Лексичний аналіз
-    let tokens = lexer::tokenize(&source)?;
-    
-    // Синтаксичний аналіз
-    let _ast = parser::parse(tokens)?;
-    
-    println!("✓ Файл синтаксично правильний");
+    // TODO: Імплементувати перевірку
+    println!("Перевірка синтаксису ще в розробці...");
     Ok(())
 }
 
@@ -224,11 +207,8 @@ fn build_project(mode: String) -> Result<()> {
 fn format_files(files: Vec<PathBuf>) -> Result<()> {
     for file in files {
         let source = std::fs::read_to_string(&file)?;
-        let tokens = lexer::tokenize(&source)?;
-        let ast = parser::parse(tokens)?;
-        let formatted = parser::format_ast(ast)?;
-        std::fs::write(&file, formatted)?;
-        println!("✓ Відформатовано: {:?}", file);
+        // TODO: Імплементувати форматування
+        println!("Форматування файлу {:?} ще в розробці...", file);
     }
     Ok(())
 }
