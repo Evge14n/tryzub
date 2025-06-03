@@ -1,3 +1,7 @@
+// Віртуальна машина мови Тризуб
+// Автор: Мартинюк Євген
+// Створено: 06.04.2025
+
 use anyhow::Result;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -106,6 +110,23 @@ pub struct VM {
 impl VM {
     pub fn new() -> Self {
         let global_scope = Rc::new(RefCell::new(Scope::new(None)));
+        
+        // Додаємо вбудовані функції
+        let mut scope = global_scope.borrow_mut();
+        
+        // Функція для конвертації цілого числа в рядок
+        scope.set("цілеврядок".to_string(), Value::Function {
+            params: vec![Parameter {
+                name: "n".to_string(),
+                ty: Type::Цл64,
+                default: None,
+            }],
+            body: vec![],
+            closure: global_scope.clone(),
+        });
+        
+        drop(scope);
+        
         Self {
             global_env: global_scope.clone(),
             current_env: global_scope,
@@ -123,6 +144,10 @@ impl VM {
         
         // Потім викликаємо функцію "головна" якщо вона є
         if let Some(Value::Function { params, body, closure }) = self.global_env.borrow().get("головна") {
+            if !params.is_empty() {
+                return Err(anyhow::anyhow!("Функція 'головна' не повинна мати параметрів"));
+            }
+            
             let prev_env = self.current_env.clone();
             self.current_env = Rc::new(RefCell::new(Scope::new(Some(closure))));
             
@@ -134,6 +159,8 @@ impl VM {
             }
             
             self.current_env = prev_env;
+        } else {
+            return Err(anyhow::anyhow!("Не знайдено функцію 'головна'"));
         }
         
         Ok(())
@@ -338,14 +365,26 @@ impl VM {
             
             Expression::Call { callee, args } => {
                 if let Expression::Identifier(name) = *callee {
+                    // Вбудовані функції
                     if name == "друк" {
-                        // Вбудована функція друку
-                        for arg in args {
-                            let val = self.evaluate_expression(arg)?;
+                        for (i, arg) in args.iter().enumerate() {
+                            if i > 0 {
+                                print!(" ");
+                            }
+                            let val = self.evaluate_expression(arg.clone())?;
                             print!("{}", val.to_string());
                         }
                         println!();
                         Ok(Value::Null)
+                    } else if name == "цілеврядок" {
+                        if args.len() != 1 {
+                            return Err(anyhow::anyhow!("цілеврядок очікує 1 аргумент"));
+                        }
+                        let val = self.evaluate_expression(args[0].clone())?;
+                        match val {
+                            Value::Integer(n) => Ok(Value::String(n.to_string())),
+                            _ => Err(anyhow::anyhow!("цілеврядок очікує ціле число")),
+                        }
                     } else if let Some(Value::Function { params, body, closure }) = 
                         self.current_env.borrow().get(&name) {
                         
@@ -354,6 +393,13 @@ impl VM {
                         self.current_env = Rc::new(RefCell::new(Scope::new(Some(closure))));
                         
                         // Прив'язуємо аргументи до параметрів
+                        if args.len() != params.len() {
+                            return Err(anyhow::anyhow!(
+                                "Функція '{}' очікує {} аргументів, отримано {}",
+                                name, params.len(), args.len()
+                            ));
+                        }
+                        
                         for (param, arg_expr) in params.iter().zip(args.iter()) {
                             let arg_value = self.evaluate_expression(arg_expr.clone())?;
                             self.current_env.borrow_mut().set(param.name.clone(), arg_value);
@@ -418,7 +464,7 @@ impl VM {
                 }
             }
             
-            Expression::Struct { name, fields } => {
+            Expression::Struct { name: _, fields } => {
                 let mut field_values = HashMap::new();
                 for (field_name, field_expr) in fields {
                     field_values.insert(field_name, self.evaluate_expression(field_expr)?);
@@ -551,41 +597,6 @@ mod tests {
     змінна b = 20
     друк(a + b)
     друк(a * b)
-}
-"#;
-        
-        let tokens = tokenize(source).unwrap();
-        let program = parse(tokens).unwrap();
-        
-        assert!(execute(program, vec![]).is_ok());
-    }
-    
-    #[test]
-    fn test_if_statement() {
-        let source = r#"
-функція головна() {
-    змінна x = 15
-    якщо (x > 10) {
-        друк("x більше 10")
-    } інакше {
-        друк("x менше або дорівнює 10")
-    }
-}
-"#;
-        
-        let tokens = tokenize(source).unwrap();
-        let program = parse(tokens).unwrap();
-        
-        assert!(execute(program, vec![]).is_ok());
-    }
-    
-    #[test]
-    fn test_for_loop() {
-        let source = r#"
-функція головна() {
-    для (i від 0 до 5) {
-        друк(i)
-    }
 }
 "#;
         

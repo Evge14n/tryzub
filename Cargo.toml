@@ -1,20 +1,24 @@
 [package]
 name = "tryzub"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
-authors = ["Tryzub Team"]
+authors = ["Мартинюк Євген <evgenmart@gmail.com>"]
 description = "Тризуб - найшвидша україномовна мова програмування"
 repository = "https://github.com/tryzub-lang/tryzub"
 license = "MIT"
+homepage = "https://tryzub-lang.org"
+readme = "README.md"
+keywords = ["programming-language", "ukrainian", "compiler", "llvm"]
+categories = ["compilers", "development-tools"]
 
-# [workspace] - тимчасово відключаємо workspace
-# members = [
-#     "src/lexer",
-#     "src/parser", 
-#     "src/compiler",
-#     "src/vm",
-#     "src/runtime",
-# ]
+[workspace]
+members = [
+    "src/lexer",
+    "src/parser", 
+    "src/compiler",
+    "src/vm",
+    "src/runtime",
+]
 
 [dependencies]
 clap = { version = "4.0", features = ["derive"] }
@@ -22,16 +26,31 @@ anyhow = "1.0"
 thiserror = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-# inkwell = { version = "0.2.0", features = ["llvm15-0"] } # Тимчасово відключено - потребує LLVM
-# cranelift = "0.95"
-# cranelift-module = "0.95"
-# cranelift-jit = "0.95"
-# cranelift-native = "0.95"
+inkwell = { version = "0.2.0", features = ["llvm15-0"] }
+cranelift = "0.95"
+cranelift-module = "0.95"
+cranelift-jit = "0.95"
+cranelift-native = "0.95"
 target-lexicon = "0.12"
 indexmap = "2.0"
 unicode-segmentation = "1.10"
 rayon = "1.7"
-# mimalloc = { version = "0.1", default-features = false }
+mimalloc = { version = "0.1", default-features = false }
+env_logger = "0.10"
+log = "0.4"
+chrono = "0.4"
+colored = "2.0"
+
+# Залежності для модулів
+tryzub-lexer = { path = "src/lexer" }
+tryzub-parser = { path = "src/parser" }
+tryzub-compiler = { path = "src/compiler" }
+tryzub-vm = { path = "src/vm" }
+tryzub-runtime = { path = "src/runtime" }
+
+[dev-dependencies]
+criterion = "0.5"
+pretty_assertions = "1.4"
 
 [profile.release]
 lto = true
@@ -43,3 +62,7 @@ panic = "abort"
 [profile.bench]
 inherits = "release"
 debug = true
+
+[[bin]]
+name = "tryzub"
+path = "src/main.rs"

@@ -1,0 +1,38 @@
+{
+  "name": "@tryzub-lang/tryzub",
+  "version": "1.0.0",
+  "description": "Тризуб - найшвидша україномовна мова програмування",
+  "author": "Мартинюк Євген <evgenmart@gmail.com>",
+  "license": "MIT",
+  "homepage": "https://github.com/tryzub-lang/tryzub",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tryzub-lang/tryzub.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tryzub-lang/tryzub/issues"
+  },
+  "keywords": [
+    "tryzub",
+    "ukrainian",
+    "programming-language",
+    "compiler",
+    "ukraine"
+  ],
+  "files": [
+    "target/release/tryzub.exe",
+    "README.md",
+    "LICENSE",
+    "examples/**/*",
+    "stdlib/**/*"
+  ],
+  "bin": {
+    "tryzub": "./target/release/tryzub.exe"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
