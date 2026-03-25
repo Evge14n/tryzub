@@ -113,6 +113,32 @@ pub enum TokenKind {
     Старе,         // old() — value before function call
     Інваріант,     // invariant (loop/type invariant)
 
+    // ── Ключові слова: персистентність та пам'ять ──
+    Персистентний, // persistent variable (survives reboot)
+    Летючий,       // volatile memory (lost on reboot)
+    Стійкий,       // persistent memory region
+    Спільний,      // shared memory between processes
+
+    // ── Ключові слова: capability security ──
+    Можливість,    // capability token
+    Дозвіл,        // permission
+    Пісочниця,     // sandbox
+
+    // ── Ключові слова: UI ──
+    Вікно,         // window declaration
+    Стовпець,      // column layout
+    Рядок_UI,      // row layout (renamed to avoid conflict)
+    Сітка,         // grid layout
+    Кнопка,        // button
+    ГарячіКлавіші, // hotkeys
+
+    // ── Ключові слова: відлагодження ──
+    Відлагодити,   // debug block
+    Зупинка,       // breakpoint
+    Назад,         // step back (time travel)
+    Розгалужити,   // branch (what-if debugging)
+    ЗнайтиМомент,  // find moment when condition
+
     // ── Ключові слова: тестування ──
     Тест,          // test block
     Фаз,           // fuzz test
@@ -852,6 +878,30 @@ impl Lexer {
             "гарантує" => TokenKind::Гарантує,
             "старе" => TokenKind::Старе,
             "інваріант" => TokenKind::Інваріант,
+
+            // Тестування
+            // Персистентність
+            "персистентний" => TokenKind::Персистентний,
+            "летючий" => TokenKind::Летючий,
+            "стійкий" => TokenKind::Стійкий,
+            "спільний" => TokenKind::Спільний,
+
+            // Security
+            "можливість" => TokenKind::Можливість,
+            "дозвіл" => TokenKind::Дозвіл,
+            "пісочниця" => TokenKind::Пісочниця,
+
+            // UI
+            "вікно" => TokenKind::Вікно,
+            "стовпець" => TokenKind::Стовпець,
+            "сітка" => TokenKind::Сітка,
+            "кнопка" => TokenKind::Кнопка,
+
+            // Відлагодження
+            "відлагодити" => TokenKind::Відлагодити,
+            "зупинка" => TokenKind::Зупинка,
+            "назад" => TokenKind::Назад,
+            "розгалужити" => TokenKind::Розгалужити,
 
             // Тестування
             "тест" => TokenKind::Тест,
