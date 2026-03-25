@@ -456,6 +456,31 @@ impl VM {
                 let val = self.evaluate_expression(value)?;
                 self.bind_pattern(&pattern, &val)?;
             }
+            Statement::Assert(expr) => {
+                let val = self.evaluate_expression(expr.clone())?;
+                if !val.to_bool() {
+                    return Err(anyhow::anyhow!("Перевірка не пройшла: {:?}", expr));
+                }
+            }
+            Statement::WithHandler { handler, body } => {
+                // Обробники ефектів — поки що просто виконуємо тіло
+                // В повній реалізації тут буде перехоплення ефектів
+                self.execute_statement(*body)?;
+            }
+            Statement::CompTime(stmts) => {
+                // Компчас — виконуємо на етапі "компіляції" (в VM — просто виконуємо)
+                for stmt in stmts {
+                    self.execute_statement(stmt)?;
+                    if self.return_value.is_some() { break; }
+                }
+            }
+            Statement::Unsafe(stmts) => {
+                // Unsafe блок — в VM просто виконуємо
+                for stmt in stmts {
+                    self.execute_statement(stmt)?;
+                    if self.return_value.is_some() { break; }
+                }
+            }
         }
         Ok(())
     }
