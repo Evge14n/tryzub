@@ -29,6 +29,7 @@ pub enum Declaration {
         body: Vec<Statement>,
         is_async: bool,
         visibility: Visibility,
+        contract: Option<Contract>,
     },
     Struct {
         name: String,
@@ -449,11 +450,14 @@ pub enum BinaryOp {
     Add, Sub, Mul, Div, Mod, Pow,
     Eq, Ne, Lt, Le, Gt, Ge,
     And, Or,
+    // Побітові
+    BitAnd, BitOr, BitXor,
+    Shl, Shr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnaryOp {
-    Neg, Not,
+    Neg, Not, BitNot,
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -616,6 +620,40 @@ impl Parser {
             None
         };
 
+        // Парсимо контракти (вимагає/гарантує) перед тілом
+        let mut contract: Option<Contract> = None;
+        let mut preconditions = Vec::new();
+        let mut postconditions = Vec::new();
+        let mut result_name = None;
+
+        // вимагає { умова1, умова2, ... }
+        if self.match_token(&TokenKind::Вимагає) {
+            self.consume(&TokenKind::ЛіваФігурна, "Очікувалась '{'")?;
+            while !self.check(&TokenKind::ПраваФігурна) && !self.is_at_end() {
+                preconditions.push(self.expression()?);
+                let _ = self.match_token(&TokenKind::Кома);
+            }
+            self.consume(&TokenKind::ПраваФігурна, "Очікувалась '}'")?;
+        }
+
+        // гарантує або гарантує(результат) { умова1, ... }
+        if self.match_token(&TokenKind::Гарантує) {
+            if self.match_token(&TokenKind::ЛіваДужка) {
+                result_name = Some(self.consume_identifier("Очікувалось ім'я результату")?);
+                self.consume(&TokenKind::ПраваДужка, "Очікувалась ')'")?;
+            }
+            self.consume(&TokenKind::ЛіваФігурна, "Очікувалась '{'")?;
+            while !self.check(&TokenKind::ПраваФігурна) && !self.is_at_end() {
+                postconditions.push(self.expression()?);
+                let _ = self.match_token(&TokenKind::Кома);
+            }
+            self.consume(&TokenKind::ПраваФігурна, "Очікувалась '}'")?;
+        }
+
+        if !preconditions.is_empty() || !postconditions.is_empty() {
+            contract = Some(Contract { preconditions, postconditions, result_name });
+        }
+
         self.consume(&TokenKind::ЛіваФігурна, "Очікувалась '{' перед тілом функції")?;
 
         let mut body = Vec::new();
@@ -632,6 +670,7 @@ impl Parser {
             body,
             is_async,
             visibility,
+            contract,
         })
     }
 
@@ -1283,10 +1322,10 @@ impl Parser {
 
     /// Діапазони: a..b, a..=b
     fn range_expression(&mut self) -> Result<Expression> {
-        let expr = self.additive_expression()?;
+        let expr = self.bitwise_or_expression()?;
 
         if self.match_token(&TokenKind::ДіапазонВключ) {
-            let to = self.additive_expression()?;
+            let to = self.bitwise_or_expression()?;
             return Ok(Expression::Range {
                 from: Box::new(expr),
                 to: Box::new(to),
@@ -1295,7 +1334,7 @@ impl Parser {
         }
 
         if self.match_token(&TokenKind::Діапазон) {
-            let to = self.additive_expression()?;
+            let to = self.bitwise_or_expression()?;
             return Ok(Expression::Range {
                 from: Box::new(expr),
                 to: Box::new(to),
@@ -1303,6 +1342,48 @@ impl Parser {
             });
         }
 
+        Ok(expr)
+    }
+
+    /// Побітове OR: a | b (тільки коли не лямбда і не pipeline)
+    fn bitwise_or_expression(&mut self) -> Result<Expression> {
+        let mut expr = self.bitwise_xor_expression()?;
+        // Note: | conflicts with lambda and pipeline, so we skip bitwise | here
+        // Use explicit бітАбо() function instead
+        Ok(expr)
+    }
+
+    /// Побітове XOR: a ^ b
+    fn bitwise_xor_expression(&mut self) -> Result<Expression> {
+        let mut expr = self.bitwise_and_expression()?;
+        while self.match_token(&TokenKind::БітВиключне) {
+            let right = self.bitwise_and_expression()?;
+            expr = Expression::Binary { left: Box::new(expr), op: BinaryOp::BitXor, right: Box::new(right) };
+        }
+        Ok(expr)
+    }
+
+    /// Побітове AND: a & b (тільки коли не посилання)
+    fn bitwise_and_expression(&mut self) -> Result<Expression> {
+        let mut expr = self.shift_expression()?;
+        // Note: & conflicts with references, skip bitwise & here
+        Ok(expr)
+    }
+
+    /// Зсуви: a << b, a >> b
+    fn shift_expression(&mut self) -> Result<Expression> {
+        let mut expr = self.additive_expression()?;
+        loop {
+            if self.match_token(&TokenKind::ЗсувЛіво) {
+                let right = self.additive_expression()?;
+                expr = Expression::Binary { left: Box::new(expr), op: BinaryOp::Shl, right: Box::new(right) };
+            } else if self.match_token(&TokenKind::ЗсувПраво) {
+                let right = self.additive_expression()?;
+                expr = Expression::Binary { left: Box::new(expr), op: BinaryOp::Shr, right: Box::new(right) };
+            } else {
+                break;
+            }
+        }
         Ok(expr)
     }
 
@@ -1877,6 +1958,7 @@ impl Parser {
     fn match_unary_op(&mut self) -> Option<UnaryOp> {
         if self.match_token(&TokenKind::Мінус) { Some(UnaryOp::Neg) }
         else if self.match_token(&TokenKind::Не) { Some(UnaryOp::Not) }
+        else if self.match_token(&TokenKind::БітНе) { Some(UnaryOp::BitNot) }
         else { None }
     }
 
