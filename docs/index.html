@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Тризуб — Українська мова програмування</title>
+    <meta name="description" content="Сучасна, безпечна, компільована мова програмування з українським синтаксисом">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔱</text></svg>">
+    <style>
+        :root {
+            --bg: #0a0e17;
+            --bg-card: #111827;
+            --bg-code: #1a1f2e;
+            --text: #e2e8f0;
+            --text-muted: #94a3b8;
+            --accent: #ffd700;
+            --accent2: #0057b8;
+            --blue: #3b82f6;
+            --green: #10b981;
+            --purple: #8b5cf6;
+            --orange: #f59e0b;
+            --red: #ef4444;
+            --border: #1e293b;
+            --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+            --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html { scroll-behavior: smooth; }
+
+        body {
+            font-family: var(--font-sans);
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.7;
+        }
+
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { text-decoration: underline; }
+
+        .container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+        /* ── Навігація ── */
+        nav {
+            position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+            background: rgba(10, 14, 23, 0.9);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border);
+            padding: 16px 0;
+        }
+        nav .container { display: flex; align-items: center; justify-content: space-between; }
+        .logo { font-size: 1.5rem; font-weight: 800; display: flex; align-items: center; gap: 8px; }
+        .logo span { color: var(--accent); }
+        .nav-links { display: flex; gap: 32px; list-style: none; }
+        .nav-links a { color: var(--text-muted); font-size: 0.9rem; font-weight: 500; transition: color 0.2s; }
+        .nav-links a:hover { color: var(--text); text-decoration: none; }
+
+        /* ── Hero ── */
+        .hero {
+            padding: 160px 0 100px;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(ellipse at center, rgba(0, 87, 184, 0.08) 0%, transparent 60%),
+                        radial-gradient(ellipse at 70% 30%, rgba(255, 215, 0, 0.05) 0%, transparent 50%);
+        }
+        .hero h1 {
+            font-size: 4.5rem;
+            font-weight: 900;
+            letter-spacing: -0.03em;
+            line-height: 1.1;
+            margin-bottom: 24px;
+            position: relative;
+        }
+        .hero h1 .emoji { font-size: 3.5rem; }
+        .hero h1 .gold { color: var(--accent); }
+        .hero h1 .blue { color: var(--accent2); }
+        .hero p {
+            font-size: 1.3rem;
+            color: var(--text-muted);
+            max-width: 700px;
+            margin: 0 auto 48px;
+            position: relative;
+        }
+
+        /* ── Кнопки ── */
+        .btn-group { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; position: relative; }
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 14px 32px;
+            border-radius: 12px;
+            font-weight: 600;
+            font-size: 1rem;
+            transition: all 0.2s;
+            border: none;
+            cursor: pointer;
+        }
+        .btn-primary {
+            background: var(--accent);
+            color: #000;
+        }
+        .btn-primary:hover { background: #ffe44d; transform: translateY(-2px); text-decoration: none; }
+        .btn-secondary {
+            background: transparent;
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
+        .btn-secondary:hover { border-color: var(--accent); text-decoration: none; }
+
+        /* ── Інсталяція ── */
+        .install-box {
+            background: var(--bg-code);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px 28px;
+            max-width: 700px;
+            margin: 40px auto 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: relative;
+        }
+        .install-box code {
+            font-family: var(--font-mono);
+            font-size: 0.95rem;
+            color: var(--green);
+        }
+        .install-box .copy-btn {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            padding: 8px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: all 0.2s;
+        }
+        .install-box .copy-btn:hover { border-color: var(--accent); color: var(--text); }
+
+        /* ── Секції ── */
+        section { padding: 100px 0; }
+        section h2 {
+            font-size: 2.5rem;
+            font-weight: 800;
+            text-align: center;
+            margin-bottom: 16px;
+        }
+        section .subtitle {
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 1.1rem;
+            max-width: 600px;
+            margin: 0 auto 60px;
+        }
+
+        /* ── Фічі ── */
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+            gap: 24px;
+        }
+        .feature-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 32px;
+            transition: transform 0.2s, border-color 0.2s;
+        }
+        .feature-card:hover { transform: translateY(-4px); border-color: var(--accent); }
+        .feature-card .icon { font-size: 2rem; margin-bottom: 16px; }
+        .feature-card h3 { font-size: 1.2rem; margin-bottom: 8px; font-weight: 700; }
+        .feature-card p { color: var(--text-muted); font-size: 0.95rem; }
+
+        /* ── Код ── */
+        .code-section {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 40px;
+            align-items: center;
+        }
+        .code-block {
+            background: var(--bg-code);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 24px;
+            overflow-x: auto;
+        }
+        .code-block pre {
+            font-family: var(--font-mono);
+            font-size: 0.9rem;
+            line-height: 1.8;
+        }
+        .code-block .header {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--border);
+        }
+        .code-block .dot { width: 12px; height: 12px; border-radius: 50%; }
+        .dot-red { background: var(--red); }
+        .dot-yellow { background: var(--orange); }
+        .dot-green { background: var(--green); }
+
+        .kw { color: var(--purple); font-weight: 600; }
+        .fn { color: var(--blue); }
+        .str { color: var(--green); }
+        .num { color: var(--orange); }
+        .cmt { color: #6b7280; font-style: italic; }
+        .type { color: var(--accent); }
+        .op { color: var(--red); }
+
+        .code-info h3 { font-size: 1.8rem; margin-bottom: 16px; font-weight: 800; }
+        .code-info p { color: var(--text-muted); font-size: 1.05rem; margin-bottom: 16px; }
+        .code-info ul { list-style: none; }
+        .code-info ul li { padding: 8px 0; color: var(--text-muted); display: flex; align-items: center; gap: 12px; }
+        .code-info ul li::before { content: ''; display: inline-block; width: 8px; height: 8px; background: var(--accent); border-radius: 50%; }
+
+        /* ── Таблиця порівняння ── */
+        .comparison-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 0 auto;
+            max-width: 800px;
+        }
+        .comparison-table th, .comparison-table td {
+            padding: 16px 20px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+        .comparison-table th { color: var(--text-muted); font-weight: 600; font-size: 0.9rem; text-transform: uppercase; }
+        .comparison-table td { font-size: 0.95rem; }
+        .comparison-table tr:hover { background: rgba(255, 255, 255, 0.02); }
+        .check { color: var(--green); }
+        .cross { color: var(--red); }
+
+        /* ── Footer ── */
+        footer {
+            border-top: 1px solid var(--border);
+            padding: 60px 0;
+            text-align: center;
+            color: var(--text-muted);
+        }
+        footer .flag { font-size: 2rem; margin-bottom: 16px; }
+
+        /* ── Responsive ── */
+        @media (max-width: 768px) {
+            .hero h1 { font-size: 2.5rem; }
+            .hero p { font-size: 1rem; }
+            .code-section { grid-template-columns: 1fr; }
+            .features-grid { grid-template-columns: 1fr; }
+            .nav-links { display: none; }
+        }
+    </style>
+</head>
+<body>
+
+<nav>
+    <div class="container">
+        <div class="logo"><span>🔱</span> Тризуб</div>
+        <ul class="nav-links">
+            <li><a href="#features">Можливості</a></li>
+            <li><a href="#code">Код</a></li>
+            <li><a href="#compare">Порівняння</a></li>
+            <li><a href="https://github.com/Evge14n/tryzub">GitHub</a></li>
+        </ul>
+    </div>
+</nav>
+
+<section class="hero">
+    <div class="container">
+        <h1>
+            <span class="emoji">🔱</span><br>
+            Мова <span class="blue">Тризуб</span>
+        </h1>
+        <p>
+            Сучасна, безпечна, компільована мова програмування з повністю українським синтаксисом.
+            Pattern matching, трейти, pipeline, LLVM-компіляція.
+        </p>
+        <div class="btn-group">
+            <a href="#install" class="btn btn-primary">Встановити</a>
+            <a href="https://github.com/Evge14n/tryzub" class="btn btn-secondary">GitHub</a>
+        </div>
+        <div class="install-box" id="install">
+            <code>curl -sSL https://evge14n.github.io/tryzub/install.sh | sh</code>
+            <button class="copy-btn" onclick="navigator.clipboard.writeText('curl -sSL https://evge14n.github.io/tryzub/install.sh | sh');this.textContent='Скопійовано!'">Копіювати</button>
+        </div>
+    </div>
+</section>
+
+<section id="features">
+    <div class="container">
+        <h2>Можливості</h2>
+        <p class="subtitle">Все найкраще з сучасних мов — одним пакетом, рідною мовою</p>
+        <div class="features-grid">
+            <div class="feature-card">
+                <div class="icon">🧩</div>
+                <h3>Алгебраїчні типи</h3>
+                <p>Enum-типи з даними, Опція&lt;Т&gt; та Результат&lt;Т, П&gt; для безпечної обробки помилок замість null та виключень</p>
+            </div>
+            <div class="feature-card">
+                <div class="icon">🎯</div>
+                <h3>Pattern Matching</h3>
+                <p>Зіставлення зразків з деструктуризацією, guard-умовами та вкладеними зразками для елегантного коду</p>
+            </div>
+            <div class="feature-card">
+                <div class="icon">🔗</div>
+                <h3>Трейти</h3>
+                <p>Типажі з методами за замовчуванням — поліморфізм без складності наслідування класів</p>
+            </div>
+            <div class="feature-card">
+                <div class="icon">🔀</div>
+                <h3>Pipeline оператор</h3>
+                <p>Оператор |&gt; для побудови ланцюжків перетворень — читабельно, як конвеєр даних</p>
+            </div>
+            <div class="feature-card">
+                <div class="icon">⚡</div>
+                <h3>LLVM + Cranelift</h3>
+                <p>Три бекенди: нативна компіляція через LLVM, JIT через Cranelift, інтерпретація через VM</p>
+            </div>
+            <div class="feature-card">
+                <div class="icon">🇺🇦</div>
+                <h3>Українська</h3>
+                <p>Всі ключові слова, повідомлення помилок та документація — рідною мовою</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section id="code" style="background: rgba(255,255,255,0.01);">
+    <div class="container">
+        <div class="code-section">
+            <div>
+                <div class="code-block">
+                    <div class="header">
+                        <div class="dot dot-red"></div>
+                        <div class="dot dot-yellow"></div>
+                        <div class="dot dot-green"></div>
+                    </div>
+<pre><span class="cmt">// Алгебраїчний тип</span>
+<span class="kw">тип</span> <span class="type">Фігура</span> {
+    <span class="type">Коло</span>(<span class="type">дрб64</span>),
+    <span class="type">Прямокутник</span>(<span class="type">дрб64</span>, <span class="type">дрб64</span>)
+}
+
+<span class="kw">функція</span> <span class="fn">площа</span>(ф: <span class="type">Фігура</span>) -> <span class="type">дрб64</span> {
+    <span class="kw">зіставити</span> ф {
+        <span class="type">Коло</span>(р) <span class="op">=></span> <span class="num">3.14</span> * р ** <span class="num">2</span>,
+        <span class="type">Прямокутник</span>(ш, в) <span class="op">=></span> ш * в
+    }
+}
+
+<span class="kw">функція</span> <span class="fn">головна</span>() {
+    <span class="kw">змінна</span> р = <span class="fn">площа</span>(<span class="type">Коло</span>(<span class="num">5.0</span>))
+    <span class="fn">друк</span>(<span class="str">ф"Площа: {р}"</span>)
+}</pre>
+                </div>
+            </div>
+            <div class="code-info">
+                <h3>Пишіть рідною мовою</h3>
+                <p>Тризуб поєднує найкраще з Rust, Kotlin та Elixir — але з повністю українським синтаксисом.</p>
+                <ul>
+                    <li>Алгебраїчні типи з pattern matching</li>
+                    <li>Трейти для поліморфізму</li>
+                    <li>Лямбда-функції та pipeline</li>
+                    <li>Інтерполяція рядків ф"...{вираз}..."</li>
+                    <li>Оператор ? для обробки помилок</li>
+                    <li>Діапазони та for-in цикли</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section id="compare">
+    <div class="container">
+        <h2>Порівняння</h2>
+        <p class="subtitle">Тризуб vs інші мови</p>
+        <table class="comparison-table">
+            <thead>
+                <tr>
+                    <th>Можливість</th>
+                    <th>Тризуб</th>
+                    <th>Python</th>
+                    <th>Go</th>
+                    <th>Rust</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td>Pattern Matching</td><td class="check">&#10003;</td><td class="check">&#10003;</td><td class="cross">&#10007;</td><td class="check">&#10003;</td></tr>
+                <tr><td>Алгебраїчні типи</td><td class="check">&#10003;</td><td class="cross">&#10007;</td><td class="cross">&#10007;</td><td class="check">&#10003;</td></tr>
+                <tr><td>Pipeline оператор</td><td class="check">&#10003;</td><td class="cross">&#10007;</td><td class="cross">&#10007;</td><td class="cross">&#10007;</td></tr>
+                <tr><td>Трейти</td><td class="check">&#10003;</td><td class="cross">&#10007;</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
+                <tr><td>Нативна компіляція</td><td class="check">&#10003;</td><td class="cross">&#10007;</td><td class="check">&#10003;</td><td class="check">&#10003;</td></tr>
+                <tr><td>Рідна мова</td><td style="color:var(--accent);font-weight:700">Українська</td><td>English</td><td>English</td><td>English</td></tr>
+                <tr><td>Складність вивчення</td><td style="color:var(--green)">Низька</td><td style="color:var(--green)">Низька</td><td>Середня</td><td style="color:var(--red)">Висока</td></tr>
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<footer>
+    <div class="container">
+        <div class="flag">🇺🇦</div>
+        <p>Зроблено з любов'ю в Україні</p>
+        <p style="margin-top:12px;font-size:0.85rem;">
+            <a href="https://github.com/Evge14n/tryzub">GitHub</a> &middot;
+            MIT License &middot;
+            &copy; 2025 Мартинюк Євген
+        </p>
+    </div>
+</footer>
+
+</body>
+</html>
