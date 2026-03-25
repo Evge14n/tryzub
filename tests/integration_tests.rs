@@ -1,161 +1,302 @@
-// use tryzub::lexer::tokenize;
-// use tryzub::parser::parse;
-// use tryzub::vm::execute;
+use tryzub_lexer::tokenize;
+use tryzub_parser::parse;
+use tryzub_vm::execute;
 
-#[test]
-fn test_placeholder() {
-    // Тимчасовий тест поки модулі в розробці
-    assert_eq!(1 + 1, 2);
+fn run(source: &str) {
+    let tokens = tokenize(source).expect("Помилка лексичного аналізу");
+    let program = parse(tokens).expect("Помилка синтаксичного аналізу");
+    execute(program, vec![]).expect("Помилка виконання");
 }
 
-/*
 #[test]
 fn test_hello_world() {
-    let source = r#"
+    run(r#"
 функція головна() {
     друк("Привіт, світ!")
 }
-"#;
-    
-    let tokens = tokenize(source).expect("Tokenization failed");
-    let ast = parse(tokens).expect("Parsing failed");
-    
-    // VM виконання
-    assert!(execute(ast, vec![]).is_ok());
+"#);
 }
 
 #[test]
 fn test_arithmetic() {
-    let source = r#"
+    run(r#"
 функція головна() {
     змінна а = 10
     змінна б = 20
     змінна с = а + б
     друк(с)
 }
-"#;
-    
-    let tokens = tokenize(source).expect("Tokenization failed");
-    let ast = parse(tokens).expect("Parsing failed");
-    
-    assert!(execute(ast, vec![]).is_ok());
+"#);
 }
 
 #[test]
-fn test_if_statement() {
-    let source = r#"
+fn test_if_else() {
+    run(r#"
 функція головна() {
-    змінна x = 42
-    
-    якщо (x > 40) {
-        друк("x більше 40")
+    змінна х = 10
+    якщо (х > 5) {
+        друк("більше")
     } інакше {
-        друк("x менше або дорівнює 40")
+        друк("менше")
     }
 }
-"#;
-    
-    let tokens = tokenize(source).expect("Tokenization failed");
-    let ast = parse(tokens).expect("Parsing failed");
-    
-    assert!(execute(ast, vec![]).is_ok());
+"#);
 }
 
 #[test]
 fn test_for_loop() {
-    let source = r#"
+    run(r#"
 функція головна() {
-    для (i від 1 до 5) {
-        друк(i)
+    змінна сума = 0
+    для (і від 1 до 11) {
+        сума += і
+    }
+    друк(сума)
+}
+"#);
+}
+
+#[test]
+fn test_for_in_range() {
+    run(r#"
+функція головна() {
+    для (і в 1..=5) {
+        друк(і)
     }
 }
-"#;
-    
-    let tokens = tokenize(source).expect("Tokenization failed");
-    let ast = parse(tokens).expect("Parsing failed");
-    
-    assert!(execute(ast, vec![]).is_ok());
+"#);
+}
+
+#[test]
+fn test_for_in_array() {
+    run(r#"
+функція головна() {
+    змінна імена = ["Олег", "Марія"]
+    для (ім в імена) {
+        друк(ім)
+    }
+}
+"#);
 }
 
 #[test]
 fn test_function_call() {
-    let source = r#"
-функція квадрат(x: цл32) -> цл32 {
-    повернути x * x
+    run(r#"
+функція додати(а: цл64, б: цл64) -> цл64 {
+    повернути а + б
 }
 
 функція головна() {
-    змінна результат = квадрат(5)
-    друк(результат)
+    друк(додати(3, 4))
 }
-"#;
-    
-    let tokens = tokenize(source).expect("Tokenization failed");
-    let ast = parse(tokens).expect("Parsing failed");
-    
-    assert!(execute(ast, vec![]).is_ok());
+"#);
 }
 
 #[test]
-fn test_string_operations() {
-    let source = r#"
-функція головна() {
-    змінна привіт = "Привіт"
-    змінна світ = "світ"
-    змінна повідомлення = привіт + ", " + світ + "!"
-    друк(повідомлення)
+fn test_function_implicit_return() {
+    run(r#"
+функція подвоїти(х: цл64) -> цл64 {
+    х * 2
 }
-"#;
-    
-    let tokens = tokenize(source).expect("Tokenization failed");
-    let ast = parse(tokens).expect("Parsing failed");
-    
-    assert!(execute(ast, vec![]).is_ok());
+
+функція головна() {
+    друк(подвоїти(21))
+}
+"#);
 }
 
 #[test]
-fn test_array_operations() {
-    let source = r#"
-функція головна() {
-    змінна числа = [1, 2, 3, 4, 5]
-    
-    для (число в числа) {
-        друк(число)
+fn test_recursion() {
+    run(r#"
+функція факторіал(н: цл64) -> цл64 {
+    якщо (н <= 1) {
+        повернути 1
     }
-    
-    друк(числа[2])
+    повернути н * факторіал(н - 1)
 }
-"#;
-    
-    let tokens = tokenize(source).expect("Tokenization failed");
-    let ast = parse(tokens).expect("Parsing failed");
-    
-    assert!(execute(ast, vec![]).is_ok());
+
+функція головна() {
+    друк(факторіал(10))
+}
+"#);
 }
 
 #[test]
-fn test_error_handling() {
-    let source = r#"
-функція ділення(а: дрб64, б: дрб64) -> дрб64 {
+fn test_enum_simple() {
+    run(r#"
+тип Колір {
+    Червоний,
+    Зелений,
+    Синій
+}
+
+функція головна() {
+    змінна к = Червоний
+    зіставити к {
+        Червоний => друк("червоний"),
+        Зелений => друк("зелений"),
+        Синій => друк("синій")
+    }
+}
+"#);
+}
+
+#[test]
+fn test_enum_with_data() {
+    run(r#"
+функція головна() {
+    змінна значення = Деякий(42)
+    зіставити значення {
+        Деякий(н) => друк(н),
+        Нічого => друк("пусто")
+    }
+}
+"#);
+}
+
+#[test]
+fn test_match_with_guard() {
+    run(r#"
+функція головна() {
+    змінна оцінка = 85
+    зіставити оцінка {
+        _ якщо оцінка >= 90 => друк("A"),
+        _ якщо оцінка >= 70 => друк("B"),
+        _ => друк("C")
+    }
+}
+"#);
+}
+
+#[test]
+fn test_match_as_expression() {
+    run(r#"
+тип Колір {
+    Червоний,
+    Зелений
+}
+
+функція назва(к: Колір) -> тхт {
+    зіставити к {
+        Червоний => "червоний",
+        Зелений => "зелений"
+    }
+}
+
+функція головна() {
+    друк(назва(Червоний))
+    друк(назва(Зелений))
+}
+"#);
+}
+
+#[test]
+fn test_result_type() {
+    run(r#"
+функція поділити(а: дрб64, б: дрб64) -> Результат<дрб64, тхт> {
     якщо (б == 0.0) {
-        помилка("Ділення на нуль!")
+        повернути Помилка("ділення на нуль")
     }
-    повернути а / б
+    повернути Успіх(а / б)
 }
 
 функція головна() {
-    спробувати {
-        змінна результат = ділення(10.0, 0.0)
-        друк(результат)
-    } зловити (е) {
-        друк("Помилка: " + повідомлення_помилки(е))
+    зіставити поділити(10.0, 2.0) {
+        Успіх(р) => друк(р),
+        Помилка(п) => друк(п)
+    }
+    зіставити поділити(10.0, 0.0) {
+        Успіх(р) => друк(р),
+        Помилка(п) => друк(п)
     }
 }
-"#;
-    
-    let tokens = tokenize(source).expect("Tokenization failed");
-    let ast = parse(tokens).expect("Parsing failed");
-    
-    assert!(execute(ast, vec![]).is_ok());
+"#);
 }
-*/
+
+#[test]
+fn test_while_loop() {
+    run(r#"
+функція головна() {
+    змінна і = 0
+    поки (і < 5) {
+        друк(і)
+        і += 1
+    }
+}
+"#);
+}
+
+#[test]
+fn test_string_concatenation() {
+    run(r#"
+функція головна() {
+    змінна а = "Привіт"
+    змінна б = ", світ!"
+    друк(а + б)
+}
+"#);
+}
+
+#[test]
+fn test_array_indexing() {
+    run(r#"
+функція головна() {
+    змінна масив = [10, 20, 30]
+    друк(масив[0])
+    друк(масив[1])
+    друк(масив[2])
+}
+"#);
+}
+
+#[test]
+fn test_nested_functions() {
+    run(r#"
+функція зовнішня(х: цл64) -> цл64 {
+    повернути внутрішня(х) + 1
+}
+
+функція внутрішня(х: цл64) -> цл64 {
+    повернути х * 2
+}
+
+функція головна() {
+    друк(зовнішня(5))
+}
+"#);
+}
+
+#[test]
+fn test_struct_creation() {
+    run(r#"
+структура Точка {
+    х: дрб64,
+    у: дрб64
+}
+
+функція головна() {
+    змінна т = Точка { х: 3.0, у: 4.0 }
+    друк(т.х)
+    друк(т.у)
+}
+"#);
+}
+
+#[test]
+fn test_break_continue() {
+    run(r#"
+функція головна() {
+    змінна сума = 0
+    для (і від 1 до 100) {
+        якщо (і > 10) {
+            переривати
+        }
+        якщо (і % 2 == 0) {
+            продовжити
+        }
+        сума += і
+    }
+    друк(сума)
+}
+"#);
+}
