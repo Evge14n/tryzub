@@ -82,6 +82,25 @@ pub enum TokenKind {
     Потік,         // spawn thread
     Канал,         // channel
 
+    // ── Ключові слова: системне програмування ──
+    Небезпечний,   // unsafe блок
+    Асемблер,      // asm! inline assembly
+    Зовнішній,     // extern "C"
+    Розмір,        // sizeof
+    Зміщення,      // offsetof
+    Вирівняний,    // align
+    Упакований,    // packed struct
+    Мінливий,      // volatile
+    Статичний_Змін, // static mut
+    Переривання,   // interrupt handler
+
+    // ── Ключові слова: час компіляції ──
+    КомпЧас,       // comptime (як Zig)
+    Вбудований,    // inline
+    НеВбудований,  // noinline
+    Гарячий,       // hot path optimization hint
+    Холодний,      // cold path optimization hint
+
     // ── Ключові слова: інше ──
     Як,            // as (для import alias та type cast)
     Де,            // where (для generic constraints)
@@ -93,6 +112,11 @@ pub enum TokenKind {
     Лог,
     Сим,
     Тхт,
+    // Системні типи
+    ЧсРозм,       // usize
+    ЦлРозм,       // isize
+    Вказівник,     // raw pointer *mut T / *const T
+    Пусто,         // void / () / never type
 
     // ── Оператори: арифметичні ──
     Плюс,          // +
@@ -123,11 +147,25 @@ pub enum TokenKind {
     ПоділитиПрисвоїти,  // /=
     ЗалишокПрисвоїти,   // %=
 
+    // ── Оператори: побітові ──
+    БітІ,          // & (bitwise AND) — в контексті виразів
+    БітАбо,        // | (bitwise OR) — в контексті виразів
+    БітВиключне,   // ^ (bitwise XOR)
+    БітНе,         // ~ (bitwise NOT)
+    ЗсувЛіво,      // << (left shift)
+    ЗсувПраво,     // >> (right shift)
+    БітІПрисвоїти, // &=
+    БітАбоПрисвоїти, // |=
+    БітВиключнеПрисвоїти, // ^=
+    ЗсувЛівоПрисвоїти,    // <<=
+    ЗсувПравоПрисвоїти,   // >>=
+
     // ── Оператори: спеціальні ──
     Конвеєр,       // |>  (pipeline)
     Діапазон,      // ..  (range exclusive)
     ДіапазонВключ, // ..= (range inclusive)
     ЗнакПитання,   // ?   (error propagation)
+    Зірочка,       // * (dereference pointer)
 
     // ── Розділові знаки ──
     ЛіваДужка,     // (
@@ -331,24 +369,46 @@ impl Lexer {
                 }
             }
             '<' => {
-                if self.match_char('=') {
+                if self.match_char('<') {
+                    if self.match_char('=') {
+                        Ok(Some(self.make_token(TokenKind::ЗсувЛівоПрисвоїти, start_column)))
+                    } else {
+                        Ok(Some(self.make_token(TokenKind::ЗсувЛіво, start_column)))
+                    }
+                } else if self.match_char('=') {
                     Ok(Some(self.make_token(TokenKind::МеншеАбоДорівнює, start_column)))
                 } else {
                     Ok(Some(self.make_token(TokenKind::Менше, start_column)))
                 }
             }
             '>' => {
-                if self.match_char('=') {
+                if self.match_char('>') {
+                    if self.match_char('=') {
+                        Ok(Some(self.make_token(TokenKind::ЗсувПравоПрисвоїти, start_column)))
+                    } else {
+                        Ok(Some(self.make_token(TokenKind::ЗсувПраво, start_column)))
+                    }
+                } else if self.match_char('=') {
                     Ok(Some(self.make_token(TokenKind::БільшеАбоДорівнює, start_column)))
                 } else {
                     Ok(Some(self.make_token(TokenKind::Більше, start_column)))
                 }
             }
+            '^' => {
+                if self.match_char('=') {
+                    Ok(Some(self.make_token(TokenKind::БітВиключнеПрисвоїти, start_column)))
+                } else {
+                    Ok(Some(self.make_token(TokenKind::БітВиключне, start_column)))
+                }
+            }
+            '~' => Ok(Some(self.make_token(TokenKind::БітНе, start_column))),
 
             // Логічні та спеціальні
             '&' => {
                 if self.match_char('&') {
                     Ok(Some(self.make_token(TokenKind::І, start_column)))
+                } else if self.match_char('=') {
+                    Ok(Some(self.make_token(TokenKind::БітІПрисвоїти, start_column)))
                 } else {
                     Ok(Some(self.make_token(TokenKind::Амперсанд, start_column)))
                 }
@@ -358,6 +418,8 @@ impl Lexer {
                     Ok(Some(self.make_token(TokenKind::Або, start_column)))
                 } else if self.match_char('>') {
                     Ok(Some(self.make_token(TokenKind::Конвеєр, start_column)))
+                } else if self.match_char('=') {
+                    Ok(Some(self.make_token(TokenKind::БітАбоПрисвоїти, start_column)))
                 } else {
                     Ok(Some(self.make_token(TokenKind::Вертикальна, start_column)))
                 }
@@ -738,6 +800,24 @@ impl Lexer {
             "потік" => TokenKind::Потік,
             "канал" => TokenKind::Канал,
 
+            // Системне програмування
+            "небезпечний" => TokenKind::Небезпечний,
+            "асемблер" => TokenKind::Асемблер,
+            "зовнішній" => TokenKind::Зовнішній,
+            "розмір" => TokenKind::Розмір,
+            "зміщення" => TokenKind::Зміщення,
+            "вирівняний" => TokenKind::Вирівняний,
+            "упакований" => TokenKind::Упакований,
+            "мінливий" => TokenKind::Мінливий,
+            "переривання" => TokenKind::Переривання,
+
+            // Час компіляції та оптимізація
+            "компчас" => TokenKind::КомпЧас,
+            "вбудований" => TokenKind::Вбудований,
+            "невбудований" => TokenKind::НеВбудований,
+            "гарячий" => TokenKind::Гарячий,
+            "холодний" => TokenKind::Холодний,
+
             // Інше
             "як" => TokenKind::Як,
             "де" => TokenKind::Де,
@@ -756,6 +836,10 @@ impl Lexer {
             "лог" => TokenKind::Лог,
             "сим" => TokenKind::Сим,
             "тхт" => TokenKind::Тхт,
+            "чсрозм" => TokenKind::ЧсРозм,
+            "цлрозм" => TokenKind::ЦлРозм,
+            "вказівник" => TokenKind::Вказівник,
+            "пусто" => TokenKind::Пусто,
 
             _ => TokenKind::Ідентифікатор(value.clone()),
         };
