@@ -11,7 +11,7 @@ use std::fs;
 #[derive(Parser)]
 #[command(name = "tryzub")]
 #[command(author = "Мартинюк Євген <evgenmart@gmail.com>")]
-#[command(version = "2.0.0")]
+#[command(version = "3.5.0")]
 #[command(about = "Тризуб — сучасна українська мова програмування 🔱")]
 struct Cli {
     #[command(subcommand)]
