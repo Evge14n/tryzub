@@ -2,6 +2,9 @@
 name = "tryzub-runtime"
 version = "1.0.0"
 edition = "2021"
+
+[lib]
+path = "lib.rs"
 authors = ["Мартинюк Євген <evgenmart@gmail.com>"]
 
 [dependencies]

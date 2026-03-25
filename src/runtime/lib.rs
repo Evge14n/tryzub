@@ -12,11 +12,28 @@ use std::sync::Arc;
 use std::thread;
 use thiserror::Error;
 
+// ===== Send/Sync wrapper for raw pointers =====
+
+/// A wrapper around `*mut u8` that is `Send` and `Sync`.
+/// Safety: the MemoryManager ensures that pointers are only accessed
+/// through its own synchronized API (DashMap + Mutex).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct SendPtr(*mut u8);
+
+unsafe impl Send for SendPtr {}
+unsafe impl Sync for SendPtr {}
+
+impl SendPtr {
+    fn as_ptr(self) -> *mut u8 {
+        self.0
+    }
+}
+
 // ===== Система управління пам'яттю =====
 
 #[derive(Debug)]
 pub struct MemoryManager {
-    allocations: DashMap<*mut u8, AllocationInfo>,
+    allocations: DashMap<SendPtr, AllocationInfo>,
     total_allocated: Arc<Mutex<usize>>,
     allocation_limit: usize,
 }
@@ -36,36 +53,37 @@ impl MemoryManager {
             allocation_limit: limit,
         }
     }
-    
+
     pub unsafe fn allocate(&self, size: usize, align: usize, location: Option<String>) -> Result<*mut u8> {
-        let layout = Layout::from_size_align(size, align)?;
-        
+        let layout = Layout::from_size_align(size, align)
+            .map_err(|e| anyhow::anyhow!("Invalid layout: {}", e))?;
+
         let mut total = self.total_allocated.lock();
         if *total + size > self.allocation_limit {
             return Err(MemoryError::OutOfMemory { requested: size, available: self.allocation_limit - *total }.into());
         }
-        
+
         let ptr = alloc(layout);
         if ptr.is_null() {
             return Err(MemoryError::AllocationFailed { size }.into());
         }
-        
+
         *total += size;
-        self.allocations.insert(ptr, AllocationInfo { size, layout, source_location: location });
-        
+        self.allocations.insert(SendPtr(ptr), AllocationInfo { size, layout, source_location: location });
+
         Ok(ptr)
     }
-    
+
     pub unsafe fn deallocate(&self, ptr: *mut u8) -> Result<()> {
-        if let Some((_, info)) = self.allocations.remove(&ptr) {
+        if let Some((_, info)) = self.allocations.remove(&SendPtr(ptr)) {
             dealloc(ptr, info.layout);
             *self.total_allocated.lock() -= info.size;
             Ok(())
         } else {
-            Err(MemoryError::InvalidPointer { ptr }.into())
+            Err(MemoryError::InvalidPointer { ptr: ptr as usize }.into())
         }
     }
-    
+
     pub fn get_stats(&self) -> MemoryStats {
         MemoryStats {
             total_allocated: *self.total_allocated.lock(),
@@ -86,12 +104,12 @@ pub struct MemoryStats {
 pub enum MemoryError {
     #[error("Недостатньо пам'яті: запитано {requested} байт, доступно {available} байт")]
     OutOfMemory { requested: usize, available: usize },
-    
+
     #[error("Не вдалося виділити {size} байт пам'яті")]
     AllocationFailed { size: usize },
-    
-    #[error("Невалідний покажчик: {ptr:?}")]
-    InvalidPointer { ptr: *mut u8 },
+
+    #[error("Невалідний покажчик: 0x{ptr:x}")]
+    InvalidPointer { ptr: usize },
 }
 
 // Глобальний менеджер пам'яті
@@ -117,28 +135,29 @@ impl ThreadPool {
     pub fn new(size: usize) -> Self {
         let (sender, receiver) = bounded(size * 2);
         let receiver = Arc::new(Mutex::new(receiver));
-        
+
         let mut workers = Vec::with_capacity(size);
-        
+
         for id in 0..size {
             workers.push(Worker::new(id, Arc::clone(&receiver)));
         }
-        
+
         ThreadPool { workers, sender }
     }
-    
+
     pub fn execute<F>(&self, f: F) -> Result<()>
     where
         F: FnOnce() + Send + 'static,
     {
         let job = Box::new(f);
-        self.sender.send(job)?;
+        self.sender.send(job)
+            .map_err(|e| anyhow::anyhow!("Failed to send job to thread pool: {}", e))?;
         Ok(())
     }
-    
+
     pub fn shutdown(&mut self) {
         drop(self.sender.clone());
-        
+
         for worker in &mut self.workers {
             if let Some(thread) = worker.thread.take() {
                 thread.join().unwrap();
@@ -151,7 +170,7 @@ impl Worker {
     fn new(id: usize, receiver: Arc<Mutex<Receiver<Job>>>) -> Worker {
         let thread = thread::spawn(move || loop {
             let job = receiver.lock().recv();
-            
+
             match job {
                 Ok(job) => {
                     job();
@@ -161,7 +180,7 @@ impl Worker {
                 }
             }
         });
-        
+
         Worker {
             id,
             thread: Some(thread),
@@ -215,23 +234,23 @@ impl TryzubError {
             stack_trace: Vec::new(),
         }
     }
-    
+
     pub fn with_location(mut self, location: SourceLocation) -> Self {
         self.source_location = Some(location);
         self
     }
-    
+
     pub fn add_stack_frame(&mut self, frame: StackFrame) {
         self.stack_trace.push(frame);
     }
-    
+
     pub fn format_error(&self) -> String {
         let mut output = format!("{:?}: {}", self.kind, self.message);
-        
+
         if let Some(loc) = &self.source_location {
             output.push_str(&format!("\n  Файл: {}, рядок {}, колонка {}", loc.file, loc.line, loc.column));
         }
-        
+
         if !self.stack_trace.is_empty() {
             output.push_str("\n\nСтек викликів:");
             for frame in &self.stack_trace {
@@ -241,7 +260,7 @@ impl TryzubError {
                 ));
             }
         }
-        
+
         output
     }
 }
@@ -249,12 +268,14 @@ impl TryzubError {
 // ===== FFI (Foreign Function Interface) =====
 
 #[repr(C)]
+#[derive(Clone, Debug)]
 pub struct TryzubValue {
     pub value_type: ValueType,
     pub data: ValueData,
 }
 
 #[repr(C)]
+#[derive(Clone, Debug)]
 pub enum ValueType {
     Null,
     Integer,
@@ -266,6 +287,7 @@ pub enum ValueType {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub union ValueData {
     pub null: (),
     pub integer: i64,
@@ -275,6 +297,19 @@ pub union ValueData {
     pub array: *mut TryzubArray,
     pub object: *mut TryzubObject,
 }
+
+// Manual Debug impl for the union since it can't be auto-derived
+impl std::fmt::Debug for ValueData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ValueData").finish()
+    }
+}
+
+// Safety: TryzubValue is used across threads via DashMap in AsyncRuntime.
+// The raw pointers inside ValueData are only dereferenced in unsafe FFI code
+// and ownership is tracked by the runtime.
+unsafe impl Send for TryzubValue {}
+unsafe impl Sync for TryzubValue {}
 
 #[repr(C)]
 pub struct TryzubArray {
@@ -339,7 +374,7 @@ pub extern "C" fn tryzub_free_value(value: *mut TryzubValue) {
                             let elem = array.elements.add(i);
                             tryzub_free_value(elem);
                         }
-                        dealloc(array.elements as *mut u8, 
+                        dealloc(array.elements as *mut u8,
                                Layout::array::<TryzubValue>(array.capacity).unwrap());
                     }
                 }
@@ -357,7 +392,7 @@ pub struct AsyncRuntime {
     next_task_id: Arc<Mutex<usize>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum TaskState {
     Running,
     Completed(TryzubValue),
@@ -372,7 +407,7 @@ impl AsyncRuntime {
             next_task_id: Arc::new(Mutex::new(0)),
         }
     }
-    
+
     pub fn spawn_task<F>(&self, task: F) -> Result<usize>
     where
         F: FnOnce() -> Result<TryzubValue> + Send + 'static,
@@ -383,10 +418,10 @@ impl AsyncRuntime {
             *id += 1;
             current_id
         };
-        
+
         self.tasks.insert(task_id, TaskState::Running);
         let tasks = self.tasks.clone();
-        
+
         self.thread_pool.execute(move || {
             let result = task();
             match result {
@@ -399,23 +434,31 @@ impl AsyncRuntime {
                 }
             }
         })?;
-        
+
         Ok(task_id)
     }
-    
+
     pub fn await_task(&self, task_id: usize) -> Result<TryzubValue> {
         loop {
             if let Some(state) = self.tasks.get(&task_id) {
                 match state.value() {
                     TaskState::Running => {
+                        // Drop the guard before yielding to avoid holding the lock
+                        drop(state);
                         thread::yield_now();
                         continue;
                     }
                     TaskState::Completed(value) => {
-                        return Ok(value.clone());
+                        let cloned = value.clone();
+                        // Drop the guard before returning
+                        drop(state);
+                        return Ok(cloned);
                     }
                     TaskState::Failed(error) => {
-                        return Err(anyhow::anyhow!(error.format_error()));
+                        let msg = error.format_error();
+                        // Drop the guard before returning
+                        drop(state);
+                        return Err(anyhow::anyhow!(msg));
                     }
                 }
             } else {
@@ -473,7 +516,7 @@ pub extern "C" fn tryzub_spawn_async(callback: extern "C" fn() -> *mut TryzubVal
             }
         }
     });
-    
+
     match result {
         Ok(task_id) => task_id as c_int,
         Err(_) => -1,
@@ -485,7 +528,7 @@ pub extern "C" fn tryzub_await_async(task_id: c_int) -> *mut TryzubValue {
     if task_id < 0 {
         return ptr::null_mut();
     }
-    
+
     match ASYNC_RUNTIME.await_task(task_id as usize) {
         Ok(value) => Box::into_raw(Box::new(value)),
         Err(_) => ptr::null_mut(),
@@ -510,37 +553,37 @@ pub extern "C" fn tryzub_runtime_shutdown() -> c_int {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_memory_allocation() {
         unsafe {
             let ptr = MEMORY_MANAGER.allocate(1024, 8, Some("test".to_string())).unwrap();
             assert!(!ptr.is_null());
-            
+
             MEMORY_MANAGER.deallocate(ptr).unwrap();
-            
+
             let stats = MEMORY_MANAGER.get_stats();
             assert_eq!(stats.total_allocated, 0);
         }
     }
-    
+
     #[test]
     fn test_thread_pool() {
         let pool = ThreadPool::new(4);
         let (tx, rx) = std::sync::mpsc::channel();
-        
+
         for i in 0..10 {
             let tx = tx.clone();
             pool.execute(move || {
                 tx.send(i).unwrap();
             }).unwrap();
         }
-        
+
         let mut results = Vec::new();
         for _ in 0..10 {
             results.push(rx.recv().unwrap());
         }
-        
+
         results.sort();
         assert_eq!(results, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
     }

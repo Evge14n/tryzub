@@ -1,24 +1,25 @@
 [package]
 name = "tryzub"
-version = "1.0.0"
+version = "2.0.0"
 edition = "2021"
 authors = ["Мартинюк Євген <evgenmart@gmail.com>"]
-description = "Тризуб - найшвидша україномовна мова програмування"
-repository = "https://github.com/tryzub-lang/tryzub"
+description = "Тризуб — сучасна українська мова програмування"
+repository = "https://github.com/Evge14n/tryzub"
 license = "MIT"
-homepage = "https://tryzub-lang.org"
 readme = "README.md"
-keywords = ["programming-language", "ukrainian", "compiler", "llvm"]
+keywords = ["programming-language", "ukrainian", "compiler"]
 categories = ["compilers", "development-tools"]
 
 [workspace]
 members = [
     "src/lexer",
-    "src/parser", 
-    "src/compiler",
+    "src/parser",
     "src/vm",
-    "src/runtime",
 ]
+
+[features]
+default = []
+llvm = ["dep:tryzub-compiler", "dep:tryzub-runtime", "dep:inkwell", "dep:cranelift", "dep:cranelift-module", "dep:cranelift-jit", "dep:cranelift-native", "dep:target-lexicon"]
 
 [dependencies]
 clap = { version = "4.0", features = ["derive"] }
@@ -26,30 +27,25 @@ anyhow = "1.0"
 thiserror = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-inkwell = { version = "0.2.0", features = ["llvm15-0"] }
-cranelift = "0.95"
-cranelift-module = "0.95"
-cranelift-jit = "0.95"
-cranelift-native = "0.95"
-target-lexicon = "0.12"
-indexmap = "2.0"
-unicode-segmentation = "1.10"
-rayon = "1.7"
-mimalloc = { version = "0.1", default-features = false }
-env_logger = "0.10"
-log = "0.4"
-chrono = "0.4"
 colored = "2.0"
+chrono = "0.4"
 
-# Залежності для модулів
+# Core modules (always included)
 tryzub-lexer = { path = "src/lexer" }
 tryzub-parser = { path = "src/parser" }
-tryzub-compiler = { path = "src/compiler" }
 tryzub-vm = { path = "src/vm" }
-tryzub-runtime = { path = "src/runtime" }
+
+# Optional: LLVM native compilation
+tryzub-compiler = { path = "src/compiler", optional = true }
+tryzub-runtime = { path = "src/runtime", optional = true }
+inkwell = { version = "0.2.0", features = ["llvm15-0"], optional = true }
+cranelift = { version = "0.95", optional = true }
+cranelift-module = { version = "0.95", optional = true }
+cranelift-jit = { version = "0.95", optional = true }
+cranelift-native = { version = "0.95", optional = true }
+target-lexicon = { version = "0.12", optional = true }
 
 [dev-dependencies]
-criterion = "0.5"
 pretty_assertions = "1.4"
 
 [profile.release]
@@ -57,11 +53,6 @@ lto = true
 codegen-units = 1
 opt-level = 3
 strip = true
-panic = "abort"
-
-[profile.bench]
-inherits = "release"
-debug = true
 
 [[bin]]
 name = "tryzub"
