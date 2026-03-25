@@ -8,7 +8,7 @@ use std::cell::RefCell;
 use tryzub_parser::{
     Program, Declaration, Statement, Expression, Literal, BinaryOp, UnaryOp,
     Type, Parameter, AssignmentOp, Pattern, MatchArm, FormatPart, LambdaParam,
-    EnumVariant, TraitMethod,
+    EnumVariant, TraitMethod, Contract,
 };
 
 // ════════════════════════════════════════════════════════════════════
@@ -197,6 +197,8 @@ pub struct VM {
     enum_types: HashMap<String, Vec<EnumVariant>>,
     /// Зареєстровані трейти
     trait_methods: HashMap<(String, String), Vec<Statement>>, // (тип, метод) -> тіло
+    /// Контракти функцій
+    contracts: HashMap<String, Contract>,
 }
 
 impl VM {
@@ -238,6 +240,7 @@ impl VM {
             continue_flag: false,
             enum_types: HashMap::new(),
             trait_methods: HashMap::new(),
+            contracts: HashMap::new(),
         }
     }
 
@@ -279,13 +282,17 @@ impl VM {
                 };
                 self.current_env.borrow_mut().set(name, val);
             }
-            Declaration::Function { name, params, body, .. } => {
+            Declaration::Function { name, params, body, contract, .. } => {
                 let func = Value::Function {
                     name: Some(name.clone()),
                     params,
                     body,
                     closure: self.current_env.clone(),
                 };
+                // Зберігаємо контракт для перевірки при виклику
+                if let Some(c) = contract {
+                    self.contracts.insert(name.clone(), c);
+                }
                 self.current_env.borrow_mut().set(name, func);
             }
             Declaration::Enum { name, variants, .. } => {
@@ -718,7 +725,7 @@ impl VM {
 
     fn call_value(&mut self, func: Value, args: Vec<Value>) -> Result<Value> {
         match func {
-            Value::Function { params, body, closure, name: _ } => {
+            Value::Function { params, body, closure, name } => {
                 let prev_env = self.current_env.clone();
                 self.current_env = Rc::new(RefCell::new(Scope::new(Some(closure))));
 
@@ -728,11 +735,23 @@ impl VM {
                     }
                 }
 
+                // Перевірка передумов (контракти: вимагає)
+                let func_name = name.clone().unwrap_or_default();
+                if let Some(contract) = self.contracts.get(&func_name).cloned() {
+                    for pre in &contract.preconditions {
+                        let val = self.evaluate_expression(pre.clone())?;
+                        if !val.to_bool() {
+                            return Err(anyhow::anyhow!(
+                                "Контракт порушено: передумова не виконана у функції '{}'", func_name
+                            ));
+                        }
+                    }
+                }
+
                 let prev_return = self.return_value.take();
                 let mut last_expr_value = Value::Null;
 
                 for (i, stmt) in body.iter().enumerate() {
-                    // Якщо це останній statement і він є виразом — це неявний return
                     if i == body.len() - 1 {
                         if let Statement::Expression(expr) = stmt {
                             last_expr_value = self.evaluate_expression(expr.clone())?;
@@ -744,6 +763,25 @@ impl VM {
                 }
 
                 let result = self.return_value.take().unwrap_or(last_expr_value);
+
+                // Перевірка постумов (контракти: гарантує)
+                if let Some(contract) = self.contracts.get(&func_name).cloned() {
+                    if !contract.postconditions.is_empty() {
+                        // Зберігаємо результат як змінну для перевірки
+                        if let Some(ref rn) = contract.result_name {
+                            self.current_env.borrow_mut().set(rn.clone(), result.clone());
+                        }
+                        for post in &contract.postconditions {
+                            let val = self.evaluate_expression(post.clone())?;
+                            if !val.to_bool() {
+                                return Err(anyhow::anyhow!(
+                                    "Контракт порушено: постумова не виконана у функції '{}'", func_name
+                                ));
+                            }
+                        }
+                    }
+                }
+
                 self.return_value = prev_return;
                 self.current_env = prev_env;
                 Ok(result)
@@ -1169,6 +1207,13 @@ impl VM {
             (BinaryOp::And, a, b) => Ok(Value::Bool(a.to_bool() && b.to_bool())),
             (BinaryOp::Or, a, b) => Ok(Value::Bool(a.to_bool() || b.to_bool())),
 
+            // Побітові
+            (BinaryOp::BitAnd, Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a & b)),
+            (BinaryOp::BitOr, Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a | b)),
+            (BinaryOp::BitXor, Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a ^ b)),
+            (BinaryOp::Shl, Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a << b)),
+            (BinaryOp::Shr, Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a >> b)),
+
             _ => Err(anyhow::anyhow!("Несумісні типи для операції {:?}: {} та {}",
                 op, lhs.type_name(), rhs.type_name())),
         }
@@ -1179,6 +1224,7 @@ impl VM {
             (UnaryOp::Neg, Value::Integer(n)) => Ok(Value::Integer(-n)),
             (UnaryOp::Neg, Value::Float(f)) => Ok(Value::Float(-f)),
             (UnaryOp::Not, _) => Ok(Value::Bool(!val.to_bool())),
+            (UnaryOp::BitNot, Value::Integer(n)) => Ok(Value::Integer(!n)),
             _ => Err(anyhow::anyhow!("Несумісний тип для унарної операції {:?}: {}", op, val.type_name())),
         }
     }

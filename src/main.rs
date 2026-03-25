@@ -47,6 +47,14 @@ enum Commands {
         name: String,
     },
 
+    /// Запустити тести у файлі
+    #[command(name = "тестувати")]
+    Test {
+        /// Файл з тестами
+        #[arg(value_name = "ФАЙЛ")]
+        file: PathBuf,
+    },
+
     /// Показати версію та інформацію
     #[command(name = "версія")]
     Version,
@@ -58,9 +66,10 @@ fn main() {
     let result = match cli.command {
         Commands::Run { file, args } => run_file(file, args),
         Commands::Check { file } => check_file(file),
+        Commands::Test { file } => run_tests(file),
         Commands::New { name } => create_project(name),
         Commands::Version => {
-            println!("🔱 Тризуб v2.0.0");
+            println!("🔱 Тризуб v3.5.0");
             println!("Автор: Мартинюк Євген");
             println!("Ліцензія: MIT");
             println!("https://github.com/Evge14n/tryzub");
@@ -100,6 +109,68 @@ fn check_file(file: PathBuf) -> Result<()> {
     println!("  ✓ Синтаксичний аналіз: OK");
 
     println!("✅ Файл синтаксично правильний");
+    Ok(())
+}
+
+fn run_tests(file: PathBuf) -> Result<()> {
+    let source = fs::read_to_string(&file)
+        .map_err(|e| anyhow::anyhow!("Не вдалося прочитати файл {:?}: {}", file, e))?;
+
+    let tokens = tryzub_lexer::tokenize(&source)?;
+    let ast = tryzub_parser::parse(tokens)?;
+
+    // Знаходимо всі тест-блоки
+    let mut total = 0;
+    let mut passed = 0;
+    let mut failed = 0;
+
+    println!("🧪 Запуск тестів з {:?}\n", file);
+
+    for decl in &ast.declarations {
+        if let tryzub_parser::Declaration::Test { name, body } = decl {
+            total += 1;
+            // Створюємо VM для кожного тесту (ізольоване середовище)
+            let test_program = tryzub_parser::Program {
+                declarations: ast.declarations.iter()
+                    .filter(|d| !matches!(d, tryzub_parser::Declaration::Test { .. }))
+                    .cloned()
+                    .chain(std::iter::once(tryzub_parser::Declaration::Function {
+                        name: "головна".to_string(),
+                        params: vec![],
+                        return_type: None,
+                        body: body.clone(),
+                        is_async: false,
+                        visibility: tryzub_parser::Visibility::Public,
+                        contract: None,
+                    }))
+                    .collect(),
+            };
+
+            match tryzub_vm::execute(test_program, vec![]) {
+                Ok(()) => {
+                    passed += 1;
+                    println!("  ✅ {}", name);
+                }
+                Err(e) => {
+                    failed += 1;
+                    println!("  ❌ {} — {}", name, e);
+                }
+            }
+        }
+    }
+
+    println!("\n─────────────────────────────");
+    println!("Всього: {} | Пройшли: {} | Провалені: {}", total, passed, failed);
+
+    if failed > 0 {
+        println!("\n❌ {} тестів провалено!", failed);
+        std::process::exit(1);
+    } else if total > 0 {
+        println!("\n✅ Всі {} тестів пройшли!", total);
+    } else {
+        println!("\n⚠️ Тестів не знайдено");
+    }
+
     Ok(())
 }
 
