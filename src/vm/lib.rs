@@ -196,9 +196,17 @@ pub struct VM {
     /// Зареєстровані типи enum
     enum_types: HashMap<String, Vec<EnumVariant>>,
     /// Зареєстровані трейти
-    trait_methods: HashMap<(String, String), Vec<Statement>>, // (тип, метод) -> тіло
+    trait_methods: HashMap<(String, String), Vec<Statement>>,
     /// Контракти функцій
     contracts: HashMap<String, Contract>,
+    /// Стек обробників ефектів: ім'я_обробника → Environment з обробником
+    effect_handlers: Vec<(String, Environment)>,
+    /// Зареєстровані ефекти: ім'я_ефекту → операції
+    registered_effects: HashMap<String, Vec<String>>,
+    /// Шляхи для пошуку stdlib модулів
+    stdlib_paths: Vec<String>,
+    /// Вже завантажені модулі
+    loaded_modules: HashMap<String, bool>,
 }
 
 impl VM {
@@ -241,6 +249,13 @@ impl VM {
             enum_types: HashMap::new(),
             trait_methods: HashMap::new(),
             contracts: HashMap::new(),
+            effect_handlers: Vec::new(),
+            registered_effects: HashMap::new(),
+            stdlib_paths: vec![
+                "stdlib".to_string(),
+                "../stdlib".to_string(),
+            ],
+            loaded_modules: HashMap::new(),
         }
     }
 
@@ -341,8 +356,24 @@ impl VM {
                 // Структури реєструються через конструктори
                 self.current_env.borrow_mut().set(name, Value::Null);
             }
+            Declaration::Effect { name, operations, .. } => {
+                // Реєструємо ефект та його операції
+                let op_names: Vec<String> = operations.iter().map(|o| o.name.clone()).collect();
+                self.registered_effects.insert(name, op_names);
+            }
+            Declaration::Import { path, .. } => {
+                // Реальний імпорт — шукаємо та завантажуємо модуль
+                let module_name = path.last().cloned().unwrap_or_default();
+                if !self.loaded_modules.contains_key(&module_name) {
+                    self.load_module(&module_name)?;
+                }
+            }
+            Declaration::Test { name, body } => {
+                // Тести не виконуються при звичайному запуску —
+                // тільки через `тризуб тестувати`
+            }
             _ => {
-                // Module, Import, TypeAlias, Interface — поки що ігноруємо
+                // TypeAlias, Interface, FuzzTest, Benchmark, Macro — парсяться але не виконуються
             }
         }
         Ok(())
@@ -470,9 +501,19 @@ impl VM {
                 }
             }
             Statement::WithHandler { handler, body } => {
-                // Обробники ефектів — поки що просто виконуємо тіло
-                // В повній реалізації тут буде перехоплення ефектів
-                self.execute_statement(*body)?;
+                // Пушимо обробник на стек ефектів
+                let handler_env = self.current_env.clone();
+                self.effect_handlers.push((handler.clone(), handler_env));
+
+                // Виконуємо тіло — всі виклики функцій з ефектами
+                // будуть бачити цей обробник
+                let result = self.execute_statement(*body);
+
+                // Попаємо обробник зі стеку
+                self.effect_handlers.pop();
+
+                // Прокидуємо помилку якщо є
+                result?;
             }
             Statement::CompTime(stmts) => {
                 // Компчас — виконуємо на етапі "компіляції" (в VM — просто виконуємо)
@@ -975,6 +1016,44 @@ impl VM {
                 Err(anyhow::anyhow!("Невідома вбудована функція: {}", name))
             }
         }
+    }
+
+    // ── Завантаження модулів ──
+
+    fn load_module(&mut self, name: &str) -> Result<()> {
+        // Шукаємо файл модуля в stdlib шляхах
+        let filenames = vec![
+            format!("{}.тризуб", name),
+            format!("{}.tryzub", name),
+        ];
+
+        for base_path in &self.stdlib_paths.clone() {
+            for filename in &filenames {
+                let path = format!("{}/{}", base_path, filename);
+                if let Ok(source) = std::fs::read_to_string(&path) {
+                    // Парсимо та виконуємо декларації модуля
+                    let tokens = tryzub_lexer::tokenize(&source)?;
+                    let program = tryzub_parser::parse(tokens)?;
+
+                    for decl in program.declarations {
+                        self.execute_declaration(decl)?;
+                    }
+
+                    self.loaded_modules.insert(name.to_string(), true);
+                    return Ok(());
+                }
+            }
+        }
+
+        // Модуль не знайдено — не помилка, просто попередження
+        self.loaded_modules.insert(name.to_string(), false);
+        Ok(())
+    }
+
+    /// Перевіряє чи є активний обробник для даного ефекту
+    fn find_effect_handler(&self, effect_name: &str) -> Option<&(String, Environment)> {
+        // Шукаємо з кінця стеку (останній доданий обробник має пріоритет)
+        self.effect_handlers.iter().rev().find(|(name, _)| name == effect_name)
     }
 
     // ── Pattern Matching ──
