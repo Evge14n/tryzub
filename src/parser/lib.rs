@@ -83,6 +83,64 @@ pub enum Declaration {
         methods: Vec<InterfaceMethod>,
         visibility: Visibility,
     },
+    /// Оголошення ефекту
+    Effect {
+        name: String,
+        operations: Vec<TraitMethod>,
+    },
+    /// Макрос
+    Macro {
+        name: String,
+        params: Vec<String>,
+        body: Vec<Statement>,
+    },
+    /// Тестовий блок: тест "назва" { ... }
+    Test {
+        name: String,
+        body: Vec<Statement>,
+    },
+    /// Фаз-тест: фаз "назва" вхід(...) { ... }
+    FuzzTest {
+        name: String,
+        inputs: Vec<FuzzInput>,
+        body: Vec<Statement>,
+    },
+    /// Бенчмарк: бенчмарк "назва" { ... }
+    Benchmark {
+        name: String,
+        sizes: Vec<Expression>,
+        body: Vec<Statement>,
+    },
+}
+
+/// Вхідний параметр для фаз-тесту
+#[derive(Debug, Clone, PartialEq)]
+pub struct FuzzInput {
+    pub name: String,
+    pub ty: Type,
+    pub range: Option<(Expression, Expression)>,
+}
+
+/// Контракт функції (вимагає/гарантує)
+#[derive(Debug, Clone, PartialEq)]
+pub struct Contract {
+    pub preconditions: Vec<Expression>,    // вимагає { ... }
+    pub postconditions: Vec<Expression>,   // гарантує { ... }
+    pub result_name: Option<String>,       // гарантує(результат) { ... }
+}
+
+/// Ефекти функції [ввід_вивід, мережа]
+#[derive(Debug, Clone, PartialEq)]
+pub struct EffectAnnotation {
+    pub effects: Vec<String>,
+    pub is_pure: bool,  // чистий
+}
+
+/// Атрибут #[назва(аргументи)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct Attribute {
+    pub name: String,
+    pub args: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -205,6 +263,17 @@ pub enum Statement {
         catch_body: Option<Box<Statement>>,
         finally_body: Option<Box<Statement>>,
     },
+    /// Перевірити (assert): перевірити вираз
+    Assert(Expression),
+    /// Блок з обробником ефектів: з_обробником Обробник { ... }
+    WithHandler {
+        handler: String,
+        body: Box<Statement>,
+    },
+    /// Компчас блок: компчас { ... }
+    CompTime(Vec<Statement>),
+    /// Unsafe блок: небезпечний { ... }
+    Unsafe(Vec<Statement>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -466,6 +535,16 @@ impl Parser {
             self.import_declaration()
         } else if self.match_token(&TokenKind::Інтерфейс) {
             self.interface_declaration(visibility)
+        } else if self.match_token(&TokenKind::Ефект) {
+            self.effect_declaration()
+        } else if self.match_token(&TokenKind::Макрос) {
+            self.macro_declaration()
+        } else if self.match_token(&TokenKind::Тест) {
+            self.test_declaration()
+        } else if self.match_token(&TokenKind::Фаз) {
+            self.fuzz_declaration()
+        } else if self.match_token(&TokenKind::Бенчмарк) {
+            self.benchmark_declaration()
         } else {
             Err(ParseError::InvalidDeclaration(self.peek().line).into())
         }
@@ -841,6 +920,145 @@ impl Parser {
         Ok(Declaration::Interface { name, methods, visibility })
     }
 
+    /// ефект Назва { функція операція(...) -> Тип }
+    fn effect_declaration(&mut self) -> Result<Declaration> {
+        let name = self.consume_identifier("Очікувалось ім'я ефекту")?;
+        self.consume(&TokenKind::ЛіваФігурна, "Очікувалась '{'")?;
+
+        let mut operations = Vec::new();
+        while !self.check(&TokenKind::ПраваФігурна) && !self.is_at_end() {
+            self.consume(&TokenKind::Функція, "Очікувалась 'функція'")?;
+            let op_name = self.consume_identifier("Очікувалось ім'я операції")?;
+            self.consume(&TokenKind::ЛіваДужка, "Очікувалась '('")?;
+            let mut params = Vec::new();
+            if !self.check(&TokenKind::ПраваДужка) {
+                loop {
+                    let pn = self.consume_identifier("Очікувалось ім'я параметра")?;
+                    self.consume(&TokenKind::Двокрапка, "Очікувалась ':'")?;
+                    let pt = self.parse_type()?;
+                    params.push(Parameter { name: pn, ty: pt, default: None });
+                    if !self.match_token(&TokenKind::Кома) { break; }
+                }
+            }
+            self.consume(&TokenKind::ПраваДужка, "Очікувалась ')'")?;
+            let return_type = if self.match_token(&TokenKind::Стрілка) { Some(self.parse_type()?) } else { None };
+            operations.push(TraitMethod { name: op_name, params, return_type, default_body: None, has_self: false });
+        }
+        self.consume(&TokenKind::ПраваФігурна, "Очікувалась '}'")?;
+        Ok(Declaration::Effect { name, operations })
+    }
+
+    /// макрос назва(параметри) { ... }
+    fn macro_declaration(&mut self) -> Result<Declaration> {
+        let name = self.consume_identifier("Очікувалось ім'я макросу")?;
+        self.consume(&TokenKind::ЛіваДужка, "Очікувалась '('")?;
+        let mut params = Vec::new();
+        if !self.check(&TokenKind::ПраваДужка) {
+            loop {
+                params.push(self.consume_identifier("Очікувалось ім'я параметра")?);
+                if !self.match_token(&TokenKind::Кома) { break; }
+            }
+        }
+        self.consume(&TokenKind::ПраваДужка, "Очікувалась ')'")?;
+        self.consume(&TokenKind::ЛіваФігурна, "Очікувалась '{'")?;
+        let mut body = Vec::new();
+        while !self.check(&TokenKind::ПраваФігурна) && !self.is_at_end() {
+            body.push(self.statement()?);
+        }
+        self.consume(&TokenKind::ПраваФігурна, "Очікувалась '}'")?;
+        Ok(Declaration::Macro { name, params, body })
+    }
+
+    /// тест "назва" { ... }
+    fn test_declaration(&mut self) -> Result<Declaration> {
+        let name = if let TokenKind::Рядок(s) = &self.peek().kind {
+            let n = s.clone(); self.advance(); n
+        } else {
+            self.consume_identifier("Очікувалась назва тесту")?
+        };
+        self.consume(&TokenKind::ЛіваФігурна, "Очікувалась '{'")?;
+        let mut body = Vec::new();
+        while !self.check(&TokenKind::ПраваФігурна) && !self.is_at_end() {
+            body.push(self.statement()?);
+        }
+        self.consume(&TokenKind::ПраваФігурна, "Очікувалась '}'")?;
+        Ok(Declaration::Test { name, body })
+    }
+
+    /// фаз "назва" вхід(...) { ... }
+    fn fuzz_declaration(&mut self) -> Result<Declaration> {
+        let name = if let TokenKind::Рядок(s) = &self.peek().kind {
+            let n = s.clone(); self.advance(); n
+        } else {
+            self.consume_identifier("Очікувалась назва фаз-тесту")?
+        };
+
+        // Парсимо вхідні параметри
+        let mut inputs = Vec::new();
+        // Пропускаємо "вхід" якщо є
+        if self.check_identifier() {
+            self.advance(); // skip "вхід"
+        }
+        if self.match_token(&TokenKind::ЛіваДужка) {
+            if !self.check(&TokenKind::ПраваДужка) {
+                loop {
+                    let inp_name = self.consume_identifier("Очікувалось ім'я")?;
+                    self.consume(&TokenKind::Двокрапка, "Очікувалась ':'")?;
+                    let inp_type = self.parse_type()?;
+                    let range = if self.match_token(&TokenKind::В) {
+                        let from = self.expression()?;
+                        self.consume(&TokenKind::Діапазон, "Очікувалось '..'")?;
+                        let to = self.expression()?;
+                        Some((from, to))
+                    } else { None };
+                    inputs.push(FuzzInput { name: inp_name, ty: inp_type, range });
+                    if !self.match_token(&TokenKind::Кома) { break; }
+                }
+            }
+            self.consume(&TokenKind::ПраваДужка, "Очікувалась ')'")?;
+        }
+
+        self.consume(&TokenKind::ЛіваФігурна, "Очікувалась '{'")?;
+        let mut body = Vec::new();
+        while !self.check(&TokenKind::ПраваФігурна) && !self.is_at_end() {
+            body.push(self.statement()?);
+        }
+        self.consume(&TokenKind::ПраваФігурна, "Очікувалась '}'")?;
+        Ok(Declaration::FuzzTest { name, inputs, body })
+    }
+
+    /// бенчмарк "назва" розмір(...) { ... }
+    fn benchmark_declaration(&mut self) -> Result<Declaration> {
+        let name = if let TokenKind::Рядок(s) = &self.peek().kind {
+            let n = s.clone(); self.advance(); n
+        } else {
+            self.consume_identifier("Очікувалась назва бенчмарку")?
+        };
+
+        let mut sizes = Vec::new();
+        // Пропускаємо "розмір" якщо є
+        if self.check_identifier() {
+            self.advance();
+        }
+        if self.match_token(&TokenKind::ЛіваДужка) {
+            if !self.check(&TokenKind::ПраваДужка) {
+                loop {
+                    sizes.push(self.expression()?);
+                    if !self.match_token(&TokenKind::Кома) { break; }
+                }
+            }
+            self.consume(&TokenKind::ПраваДужка, "Очікувалась ')'")?;
+        }
+
+        self.consume(&TokenKind::ЛіваФігурна, "Очікувалась '{'")?;
+        let mut body = Vec::new();
+        while !self.check(&TokenKind::ПраваФігурна) && !self.is_at_end() {
+            body.push(self.statement()?);
+        }
+        self.consume(&TokenKind::ПраваФігурна, "Очікувалась '}'")?;
+        Ok(Declaration::Benchmark { name, sizes, body })
+    }
+
     // ── Інструкції ──
 
     fn statement(&mut self) -> Result<Statement> {
@@ -865,6 +1083,30 @@ impl Parser {
             self.block_statement()
         } else if self.match_token(&TokenKind::Спробувати) {
             self.try_catch_statement()
+        } else if self.match_token(&TokenKind::Перевірити) {
+            let expr = self.expression()?;
+            Ok(Statement::Assert(expr))
+        } else if self.match_token(&TokenKind::ЗОбробником) {
+            let handler = self.consume_identifier("Очікувалось ім'я обробника")?;
+            self.consume(&TokenKind::ЛіваФігурна, "Очікувалась '{'")?;
+            let body = Box::new(self.block_statement()?);
+            Ok(Statement::WithHandler { handler, body })
+        } else if self.match_token(&TokenKind::КомпЧас) {
+            self.consume(&TokenKind::ЛіваФігурна, "Очікувалась '{'")?;
+            let mut stmts = Vec::new();
+            while !self.check(&TokenKind::ПраваФігурна) && !self.is_at_end() {
+                stmts.push(self.statement()?);
+            }
+            self.consume(&TokenKind::ПраваФігурна, "Очікувалась '}'")?;
+            Ok(Statement::CompTime(stmts))
+        } else if self.match_token(&TokenKind::Небезпечний) {
+            self.consume(&TokenKind::ЛіваФігурна, "Очікувалась '{'")?;
+            let mut stmts = Vec::new();
+            while !self.check(&TokenKind::ПраваФігурна) && !self.is_at_end() {
+                stmts.push(self.statement()?);
+            }
+            self.consume(&TokenKind::ПраваФігурна, "Очікувалась '}'")?;
+            Ok(Statement::Unsafe(stmts))
         } else if self.check_declaration() {
             Ok(Statement::Declaration(self.declaration()?))
         } else {
@@ -1644,7 +1886,9 @@ impl Parser {
             TokenKind::Структура | TokenKind::Тип | TokenKind::Трейт |
             TokenKind::Реалізація | TokenKind::Модуль | TokenKind::Імпорт |
             TokenKind::Експорт | TokenKind::Інтерфейс |
-            TokenKind::Публічний | TokenKind::Приватний | TokenKind::Асинхронний
+            TokenKind::Публічний | TokenKind::Приватний | TokenKind::Асинхронний |
+            TokenKind::Ефект | TokenKind::Макрос | TokenKind::Тест |
+            TokenKind::Фаз | TokenKind::Бенчмарк | TokenKind::Чистий
         )
     }
 

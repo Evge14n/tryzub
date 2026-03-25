@@ -100,6 +100,25 @@ pub enum TokenKind {
     НеВбудований,  // noinline
     Гарячий,       // hot path optimization hint
     Холодний,      // cold path optimization hint
+    Макрос,        // macro definition
+
+    // ── Ключові слова: система ефектів ──
+    Чистий,        // pure function (no side effects)
+    Ефект,         // effect declaration
+    ЗОбробником,   // with handler block
+
+    // ── Ключові слова: контракти ──
+    Вимагає,       // requires (precondition)
+    Гарантує,      // ensures (postcondition)
+    Старе,         // old() — value before function call
+    Інваріант,     // invariant (loop/type invariant)
+
+    // ── Ключові слова: тестування ──
+    Тест,          // test block
+    Фаз,           // fuzz test
+    Бенчмарк,      // benchmark
+    Перевірити,    // assert
+    Виміряти,      // measure block
 
     // ── Ключові слова: інше ──
     Як,            // as (для import alias та type cast)
@@ -166,6 +185,8 @@ pub enum TokenKind {
     ДіапазонВключ, // ..= (range inclusive)
     ЗнакПитання,   // ?   (error propagation)
     Зірочка,       // * (dereference pointer)
+    Решітка,       // # (для атрибутів #[...])
+    Собака,        // @ (для анотацій)
 
     // ── Розділові знаки ──
     ЛіваДужка,     // (
@@ -274,6 +295,8 @@ impl Lexer {
             ',' => Ok(Some(self.make_token(TokenKind::Кома, start_column))),
             ';' => Ok(Some(self.make_token(TokenKind::КрапкаЗКомою, start_column))),
             '?' => Ok(Some(self.make_token(TokenKind::ЗнакПитання, start_column))),
+            '#' => Ok(Some(self.make_token(TokenKind::Решітка, start_column))),
+            '@' => Ok(Some(self.make_token(TokenKind::Собака, start_column))),
             '_' if !self.peek().is_alphanumeric() => {
                 Ok(Some(self.make_token(TokenKind::Підкреслення, start_column)))
             }
@@ -817,6 +840,25 @@ impl Lexer {
             "невбудований" => TokenKind::НеВбудований,
             "гарячий" => TokenKind::Гарячий,
             "холодний" => TokenKind::Холодний,
+            "макрос" => TokenKind::Макрос,
+
+            // Система ефектів
+            "чистий" => TokenKind::Чистий,
+            "ефект" => TokenKind::Ефект,
+            "з_обробником" => TokenKind::ЗОбробником,
+
+            // Контракти
+            "вимагає" => TokenKind::Вимагає,
+            "гарантує" => TokenKind::Гарантує,
+            "старе" => TokenKind::Старе,
+            "інваріант" => TokenKind::Інваріант,
+
+            // Тестування
+            "тест" => TokenKind::Тест,
+            "фаз" => TokenKind::Фаз,
+            "бенчмарк" => TokenKind::Бенчмарк,
+            "перевірити" => TokenKind::Перевірити,
+            "виміряти" => TokenKind::Виміряти,
 
             // Інше
             "як" => TokenKind::Як,
