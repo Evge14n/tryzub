@@ -55,6 +55,10 @@ enum Commands {
         file: PathBuf,
     },
 
+    /// Інтерактивний режим (REPL)
+    #[command(name = "інтерактив")]
+    Repl,
+
     /// Показати версію та інформацію
     #[command(name = "версія")]
     Version,
@@ -68,6 +72,7 @@ fn main() {
         Commands::Check { file } => check_file(file),
         Commands::Test { file } => run_tests(file),
         Commands::New { name } => create_project(name),
+        Commands::Repl => run_repl(),
         Commands::Version => {
             println!("🔱 Тризуб v3.5.0");
             println!("Автор: Мартинюк Євген");
@@ -172,6 +177,114 @@ fn run_tests(file: PathBuf) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn run_repl() -> Result<()> {
+    use std::io::{self, Write, BufRead};
+
+    println!("🔱 Тризуб v3.5.0 — Інтерактивний режим");
+    println!("Введіть вираз або інструкцію. :вихід для виходу.");
+    println!("Команди: :тип <вираз>, :допомога");
+    println!();
+
+    // Збираємо декларації між введеннями
+    let mut declarations_source = String::new();
+    let stdin = io::stdin();
+
+    loop {
+        print!("тризуб> ");
+        io::stdout().flush().ok();
+
+        let mut line = String::new();
+        if stdin.lock().read_line(&mut line).is_err() || line.is_empty() {
+            break;
+        }
+        let line = line.trim().to_string();
+
+        if line.is_empty() {
+            continue;
+        }
+
+        // Спеціальні команди
+        if line == ":вихід" || line == ":quit" || line == ":q" {
+            println!("До побачення! 🇺🇦");
+            break;
+        }
+
+        if line == ":допомога" || line == ":help" {
+            println!("  :тип <вираз>    — показати тип значення");
+            println!("  :вихід          — вийти");
+            println!("  :очистити       — очистити контекст");
+            println!("  Будь-який код   — виконати");
+            continue;
+        }
+
+        if line == ":очистити" {
+            declarations_source.clear();
+            println!("Контекст очищено.");
+            continue;
+        }
+
+        if line.starts_with(":тип ") {
+            let expr = &line[":тип ".len()..];
+            let full_source = format!(
+                "{}\nфункція головна() {{ змінна __р = {} \n друк(тип_значення(__р)) }}",
+                declarations_source, expr
+            );
+            match run_source(&full_source) {
+                Ok(()) => {}
+                Err(e) => println!("❌ {}", e),
+            }
+            continue;
+        }
+
+        // Перевіряємо чи це декларація (функція, структура, тип, тощо)
+        let is_declaration = line.starts_with("функція ")
+            || line.starts_with("структура ")
+            || line.starts_with("тип ")
+            || line.starts_with("трейт ")
+            || line.starts_with("реалізація ")
+            || line.starts_with("стала ")
+            || line.starts_with("ефект ");
+
+        if is_declaration {
+            // Збираємо багаторядкову декларацію
+            let mut full = line.clone();
+            let mut brace_count: i32 = full.matches('{').count() as i32 - full.matches('}').count() as i32;
+            while brace_count > 0 {
+                print!("  ... ");
+                io::stdout().flush().ok();
+                let mut next_line = String::new();
+                if stdin.lock().read_line(&mut next_line).is_err() { break; }
+                full.push('\n');
+                full.push_str(next_line.trim());
+                brace_count += next_line.matches('{').count() as i32 - next_line.matches('}').count() as i32;
+            }
+            declarations_source.push('\n');
+            declarations_source.push_str(&full);
+            println!("  ✓ Додано");
+            continue;
+        }
+
+        // Виконуємо як вираз/інструкцію
+        let full_source = format!(
+            "{}\nфункція головна() {{ {} }}",
+            declarations_source, line
+        );
+
+        match run_source(&full_source) {
+            Ok(()) => {}
+            Err(e) => println!("❌ {}", e),
+        }
+    }
+
+    Ok(())
+}
+
+fn run_source(source: &str) -> Result<()> {
+    let tokens = tryzub_lexer::tokenize(source)?;
+    let ast = tryzub_parser::parse(tokens)?;
+    tryzub_vm::execute(ast, vec![])
 }
 
 fn create_project(name: String) -> Result<()> {
