@@ -98,7 +98,12 @@ fn run_file(file: PathBuf, args: Vec<String>) -> Result<()> {
     let ast = tryzub_parser::parse(tokens)
         .map_err(|e| anyhow::anyhow!("Помилка синтаксичного аналізу: {}", e))?;
 
-    tryzub_vm::execute(ast, args)
+    // Додаємо директорію файлу до шляхів пошуку модулів
+    let mut vm = tryzub_vm::VM::new();
+    if let Some(parent) = file.parent() {
+        vm.add_module_path(parent.to_string_lossy().to_string());
+    }
+    vm.execute_program(ast, args)
 }
 
 fn check_file(file: PathBuf) -> Result<()> {

@@ -271,6 +271,10 @@ impl VM {
             scope.set("паніка".to_string(), Value::BuiltinFn("паніка".to_string()));
             scope.set("словник".to_string(), Value::BuiltinFn("словник".to_string()));
             scope.set("множина".to_string(), Value::BuiltinFn("множина".to_string()));
+            scope.set("виконати_ефект".to_string(), Value::BuiltinFn("виконати_ефект".to_string()));
+            scope.set("мін".to_string(), Value::BuiltinFn("мін".to_string()));
+            scope.set("макс".to_string(), Value::BuiltinFn("макс".to_string()));
+            scope.set("абс".to_string(), Value::BuiltinFn("абс".to_string()));
 
             // Вбудовані конструктори Опція/Результат
             scope.set("Деякий".to_string(), Value::BuiltinFn("Деякий".to_string()));
@@ -837,15 +841,19 @@ impl VM {
                 }
             }
             Expression::Await(expr) => {
-                // Async/await: виконуємо вираз та повертаємо результат
-                // В однопоточному VM — виконуємо одразу, але через
-                // async_queue щоб зберігати семантику
+                // Async/await: event loop з чергою завдань
+                // 1. Обчислюємо вираз
                 let val = self.evaluate_expression(*expr)?;
-                // Якщо результат — це Future/функція, виконуємо її
+                // 2. Якщо результат — функція/лямбда (Future), плануємо та виконуємо
                 match val {
                     Value::Function { .. } | Value::Lambda { .. } => {
-                        self.call_value(val, vec![])
+                        // Додаємо в чергу та одразу виконуємо (cooperative scheduling)
+                        let result = self.call_value(val, vec![])?;
+                        // Після кожного await — обробляємо решту черги
+                        self.drain_async_queue()?;
+                        Ok(result)
                     }
+                    // Якщо це вже обчислене значення — просто повертаємо
                     _ => Ok(val),
                 }
             }
@@ -1395,6 +1403,42 @@ impl VM {
                 } else { Err(anyhow::anyhow!("діапазон очікує 2 аргументи")) }
             }
 
+            "виконати_ефект" => {
+                // виконати_ефект("ім'я_ефекту", "операція", аргументи...)
+                if args.len() >= 2 {
+                    let effect_name = match &args[0] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("Перший аргумент має бути ім'ям ефекту")) };
+                    let operation = match &args[1] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("Другий аргумент має бути ім'ям операції")) };
+                    let effect_args = args[2..].to_vec();
+                    self.perform_effect(&effect_name, &operation, effect_args)
+                } else {
+                    Err(anyhow::anyhow!("виконати_ефект потребує мінімум 2 аргументи"))
+                }
+            }
+            "мін" => {
+                if args.len() == 2 {
+                    match (&args[0], &args[1]) {
+                        (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(*a.min(b))),
+                        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a.min(*b))),
+                        _ => Err(anyhow::anyhow!("мін очікує два числа")),
+                    }
+                } else { Err(anyhow::anyhow!("мін очікує 2 аргументи")) }
+            }
+            "макс" => {
+                if args.len() == 2 {
+                    match (&args[0], &args[1]) {
+                        (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(*a.max(b))),
+                        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a.max(*b))),
+                        _ => Err(anyhow::anyhow!("макс очікує два числа")),
+                    }
+                } else { Err(anyhow::anyhow!("макс очікує 2 аргументи")) }
+            }
+            "абс" => {
+                match args.first() {
+                    Some(Value::Integer(n)) => Ok(Value::Integer(n.abs())),
+                    Some(Value::Float(f)) => Ok(Value::Float(f.abs())),
+                    _ => Err(anyhow::anyhow!("абс очікує число")),
+                }
+            }
             "словник" => {
                 // словник() — порожній або словник(ключ1, знач1, ключ2, знач2, ...)
                 let mut pairs = Vec::new();
@@ -1470,18 +1514,33 @@ impl VM {
 
     // ── Завантаження модулів ──
 
+    /// Додає шлях для пошуку модулів (відносно поточного файлу)
+    pub fn add_module_path(&mut self, path: String) {
+        if !self.stdlib_paths.contains(&path) {
+            self.stdlib_paths.insert(0, path);
+        }
+    }
+
     fn load_module(&mut self, name: &str) -> Result<()> {
-        // Шукаємо файл модуля в stdlib шляхах
         let filenames = vec![
             format!("{}.тризуб", name),
             format!("{}.tryzub", name),
         ];
 
-        for base_path in &self.stdlib_paths.clone() {
-            for filename in &filenames {
+        // Шукаємо у: 1) робоча директорія, 2) stdlib/, 3) ../stdlib/
+        let mut search_paths = self.stdlib_paths.clone();
+        search_paths.insert(0, ".".to_string());
+
+        // Також шукаємо у вкладених директоріях (ядро/модуль)
+        let sub_filenames: Vec<String> = vec![
+            format!("{}/{}.тризуб", name, name),
+            format!("ядро/{}.тризуб", name),
+        ];
+
+        for base_path in &search_paths {
+            for filename in filenames.iter().chain(sub_filenames.iter()) {
                 let path = format!("{}/{}", base_path, filename);
                 if let Ok(source) = std::fs::read_to_string(&path) {
-                    // Парсимо та виконуємо декларації модуля
                     let tokens = tryzub_lexer::tokenize(&source)?;
                     let program = tryzub_parser::parse(tokens)?;
 
