@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <em>Версія 3.5.0 | Автор: Мартинюк Євген | 2025</em>
+  <em>Версія 3.5.0 | Автор: ******* | 2025</em>
 </p>
 
 <p align="center">
@@ -472,9 +472,9 @@ cargo build --release
 
 ## Автор
 
-**Мартинюк Євген**
+***********
 - GitHub: [@Evge14n](https://github.com/Evge14n)
-- Email: evgenmart@gmail.com
+- Email: *******
 
 ## Ліцензія
 

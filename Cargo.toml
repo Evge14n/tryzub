@@ -2,7 +2,7 @@
 name = "tryzub"
 version = "4.1.0"
 edition = "2021"
-authors = ["Мартинюк Євген <evgenmart@gmail.com>"]
+authors = ["*******"]
 description = "Тризуб — сучасна українська мова програмування"
 repository = "https://github.com/Evge14n/tryzub"
 license = "MIT"
