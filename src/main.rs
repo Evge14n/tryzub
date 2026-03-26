@@ -59,9 +59,38 @@ enum Commands {
     #[command(name = "інтерактив")]
     Repl,
 
+    /// Веб-сервер команди
+    #[command(name = "веб")]
+    Web {
+        #[command(subcommand)]
+        action: WebCommands,
+    },
+
     /// Показати версію та інформацію
     #[command(name = "версія")]
     Version,
+}
+
+#[derive(Subcommand)]
+enum WebCommands {
+    /// Створити новий веб-проект
+    #[command(name = "новий")]
+    New {
+        /// Назва проекту
+        name: String,
+    },
+
+    /// Запустити веб-сервер (production)
+    #[command(name = "запустити")]
+    Run {
+        /// Головний файл
+        #[arg(default_value = "головна.тризуб")]
+        file: PathBuf,
+
+        /// Порт
+        #[arg(short, long, default_value = "3000")]
+        port: u16,
+    },
 }
 
 fn main() {
@@ -73,9 +102,12 @@ fn main() {
         Commands::Test { file } => run_tests(file),
         Commands::New { name } => create_project(name),
         Commands::Repl => run_repl(),
+        Commands::Web { action } => match action {
+            WebCommands::New { name } => create_web_project(name),
+            WebCommands::Run { file, port } => run_file(file, vec![port.to_string()]),
+        },
         Commands::Version => {
             println!("Тризуб v4.1.0");
-            println!("Автор: *******");
             println!("Ліцензія: MIT");
             println!("https://github.com/Evge14n/tryzub");
             Ok(())
@@ -441,6 +473,112 @@ fn create_project(name: String) -> Result<()> {
     println!("       └── головна.тризуб");
     println!();
     println!("Запустити: tryzub запустити {}/src/головна.тризуб", name);
+
+    Ok(())
+}
+
+fn create_web_project(name: String) -> Result<()> {
+    fs::create_dir_all(format!("{}/шаблони/компоненти", name))?;
+    fs::create_dir_all(format!("{}/статичні/css", name))?;
+    fs::create_dir_all(format!("{}/статичні/js", name))?;
+    fs::create_dir_all(format!("{}/статичні/img", name))?;
+    fs::create_dir_all(format!("{}/маршрути", name))?;
+    fs::create_dir_all(format!("{}/тести", name))?;
+
+    let main_content = format!(r#"// {name} — Веб-додаток на Тризуб
+// Запуск: тризуб веб запустити
+
+бд_відкрити("{name}.db")
+
+веб_сервер(3000)
+
+веб_отримати("/", |запит| {{
+    веб_html("<html><head><meta charset='utf-8'><title>{name}</title>
+    <link rel='stylesheet' href='/css/стиль.css'>
+    </head><body>
+    <h1>Ласкаво просимо до {name}!</h1>
+    <p>Веб-додаток працює на Тризуб Web</p>
+    </body></html>")
+}})
+
+веб_отримати("/api/статус", |запит| {{
+    веб_json(#{{"статус" -> "працює", "версія" -> "0.1.0"}})
+}})
+
+веб_статичні("статичні")
+
+друк("Запускаю {name}...")
+веб_запустити()
+"#);
+
+    fs::write(format!("{}/головна.тризуб", name), main_content)?;
+
+    let css = r#"* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+       max-width: 900px; margin: 50px auto; padding: 0 20px; color: #333; }
+h1 { color: #0057b7; margin-bottom: 20px; }
+a { color: #0057b7; }
+.card { background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 15px 0; }
+.btn { background: #0057b7; color: white; border: none; padding: 10px 24px;
+       border-radius: 6px; cursor: pointer; font-size: 16px; }
+.btn:hover { background: #004494; }
+"#;
+    fs::write(format!("{}/статичні/css/стиль.css", name), css)?;
+
+    let base_template = r#"<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{заголовок}</title>
+    <link rel="stylesheet" href="/css/стиль.css">
+</head>
+<body>
+    {включити "навігація"}
+    <main>{зміст}</main>
+    {включити "підвал"}
+</body>
+</html>"#;
+    fs::write(format!("{}/шаблони/основа.тхтмл", name), base_template)?;
+
+    let nav = r#"<nav style="display:flex;justify-content:space-between;align-items:center;padding:15px 0;border-bottom:1px solid #eee;margin-bottom:30px">
+    <a href="/" style="font-size:1.3em;font-weight:bold;text-decoration:none">Тризуб Web</a>
+    <div><a href="/">Головна</a> | <a href="/api/статус">API</a></div>
+</nav>"#;
+    fs::write(format!("{}/шаблони/компоненти/навігація.тхтмл", name), nav)?;
+
+    let footer = r#"<footer style="margin-top:50px;padding:20px 0;border-top:1px solid #eee;text-align:center;color:#888">
+    <p>Створено з Тризуб Web</p>
+</footer>"#;
+    fs::write(format!("{}/шаблони/компоненти/підвал.тхтмл", name), footer)?;
+
+    let project_file = format!(r#"[проект]
+назва = "{name}"
+версія = "0.1.0"
+тип = "веб"
+
+[веб]
+порт = 3000
+статичні = "статичні"
+шаблони = "шаблони"
+"#);
+    fs::write(format!("{}/проект.toml", name), project_file)?;
+
+    println!("  Веб-проект '{}' створено", name);
+    println!("  {}/", name);
+    println!("  ├── головна.тризуб");
+    println!("  ├── проект.toml");
+    println!("  ├── шаблони/");
+    println!("  │   ├── основа.тхтмл");
+    println!("  │   └── компоненти/");
+    println!("  │       ├── навігація.тхтмл");
+    println!("  │       └── підвал.тхтмл");
+    println!("  ├── статичні/");
+    println!("  │   └── css/стиль.css");
+    println!("  ├── маршрути/");
+    println!("  └── тести/");
+    println!();
+    println!("  Запустити: cd {} && тризуб веб запустити", name);
 
     Ok(())
 }
