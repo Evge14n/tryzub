@@ -5,7 +5,7 @@ edition = "2021"
 
 [lib]
 path = "lib.rs"
-authors = ["Мартинюк Євген <evgenmart@gmail.com>"]
+authors = ["*******"]
 
 [dependencies]
 anyhow = "1.0"

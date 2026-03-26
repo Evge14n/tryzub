@@ -1,6 +1,6 @@
 // Мова програмування Тризуб v3.5
-// Автор: Мартинюк Євген
-// Copyright (c) 2025 Мартинюк Євген. Всі права захищені.
+// Автор: *******
+// Copyright (c) 2025 *******. Всі права захищені.
 
 pub mod lexer {
     pub use tryzub_lexer::*;
@@ -14,8 +14,8 @@ pub mod vm {
     pub use tryzub_vm::*;
 }
 
-pub const VERSION: &str = "4.0.0";
-pub const AUTHOR: &str = "Мартинюк Євген";
+pub const VERSION: &str = "4.1.0";
+pub const AUTHOR: &str = "*******";
 
 pub fn about() -> String {
     format!(
@@ -30,6 +30,6 @@ mod tests {
 
     #[test]
     fn test_version() {
-        assert_eq!(VERSION, "4.0.0");
+        assert_eq!(VERSION, "4.1.0");
     }
 }
