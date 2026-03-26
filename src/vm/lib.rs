@@ -1354,7 +1354,7 @@ impl VM {
 
                     match method {
                         "в_масив" => {
-                            let (values, _) = self.generator_cache.get(&gen_id).unwrap();
+                            let (values, _) = self.generator_cache.get(&gen_id).ok_or_else(|| anyhow::anyhow!("Генератор не знайдено"))?;
                             return Ok(Value::Array(values.clone()));
                         }
                         "взяти" => {
@@ -1362,11 +1362,11 @@ impl VM {
                                 Some(Value::Integer(n)) => *n as usize,
                                 _ => usize::MAX,
                             };
-                            let (values, _) = self.generator_cache.get(&gen_id).unwrap();
+                            let (values, _) = self.generator_cache.get(&gen_id).ok_or_else(|| anyhow::anyhow!("Генератор не знайдено"))?;
                             return Ok(Value::Array(values.iter().take(n).cloned().collect()));
                         }
                         "наступний" => {
-                            let (values, idx) = self.generator_cache.get_mut(&gen_id).unwrap();
+                            let (values, idx) = self.generator_cache.get_mut(&gen_id).ok_or_else(|| anyhow::anyhow!("Генератор не знайдено"))?;
                             if *idx < values.len() {
                                 let val = values[*idx].clone();
                                 *idx += 1;
@@ -1472,7 +1472,7 @@ impl VM {
         for stream in listener.incoming() {
             match stream {
                 Ok(mut stream) => {
-                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut reader = BufReader::new(stream.try_clone().map_err(|e| anyhow::anyhow!("TCP clone: {}", e))?);
 
                     // Читаємо першу лінію: GET /path HTTP/1.1
                     let mut request_line = String::new();
@@ -1745,6 +1745,26 @@ impl VM {
             "map" => "application/json",
             _ => "application/octet-stream",
         }.to_string()
+    }
+
+    /// Валідація SQL ідентифікаторів (захист від SQL injection через імена таблиць/колонок)
+    fn validate_sql_identifier(name: &str) -> Result<()> {
+        if name.is_empty() {
+            return Err(anyhow::anyhow!("SQL ідентифікатор не може бути порожнім"));
+        }
+        for c in name.chars() {
+            if !c.is_alphanumeric() && c != '_' {
+                return Err(anyhow::anyhow!(
+                    "SQL ідентифікатор '{}' містить недозволений символ '{}'. Дозволені: літери, цифри, _",
+                    name, c
+                ));
+            }
+        }
+        let first = name.chars().next().unwrap();
+        if first.is_ascii_digit() {
+            return Err(anyhow::anyhow!("SQL ідентифікатор '{}' не може починатись з цифри", name));
+        }
+        Ok(())
     }
 
     fn call_builtin(&mut self, name: &str, args: Vec<Value>) -> Result<Value> {
@@ -2197,7 +2217,7 @@ impl VM {
                     let handler = args[1].clone();
 
                     if let Some(ref routes) = self.web_routes {
-                        routes.lock().unwrap().add_route(
+                        routes.lock().map_err(|e| anyhow::anyhow!("Помилка блокування: {}", e))?.add_route(
                             method.to_string(), path.clone(), handler
                         );
                         println!("  {} {} → зареєстровано", method, path);
@@ -2212,7 +2232,7 @@ impl VM {
                 // веб_статичні(директорія) — роздача статичних файлів
                 if let Some(Value::String(dir)) = args.first() {
                     if let Some(ref routes) = self.web_routes {
-                        routes.lock().unwrap().static_dir = Some(dir.clone());
+                        routes.lock().map_err(|e| anyhow::anyhow!("Помилка блокування: {}", e))?.static_dir = Some(dir.clone());
                         println!("  📁 Статичні файли: {}/", dir);
                     }
                     Ok(Value::Null)
@@ -2224,7 +2244,7 @@ impl VM {
             "веб_запустити" => {
                 // веб_запустити() — запускає сервер
                 if let Some(ref routes) = self.web_routes {
-                    let routes_data = routes.lock().unwrap().clone();
+                    let routes_data = routes.lock().map_err(|e| anyhow::anyhow!("Помилка блокування: {}", e))?.clone();
                     self.start_web_server(routes_data)?;
                 }
                 Ok(Value::Null)
@@ -2320,7 +2340,7 @@ impl VM {
                 // бд_створити_таблицю(назва, схема_словник)
                 if args.len() >= 2 {
                     let table = match &args[0] {
-                        Value::String(s) => s.clone(),
+                        Value::String(s) => { Self::validate_sql_identifier(s)?; s.clone() },
                         _ => return Err(anyhow::anyhow!("бд_створити_таблицю: назва має бути рядком")),
                     };
                     let schema = match &args[1] {
@@ -2352,7 +2372,7 @@ impl VM {
                         table, columns.join(", "));
 
                     if let Some(conn) = self.get_db_connection() {
-                        let db = conn.lock().unwrap();
+                        let db = conn.lock().map_err(|e| anyhow::anyhow!("Помилка блокування: {}", e))?;
                         db.execute(&sql, [])
                             .map_err(|e| anyhow::anyhow!("SQL помилка: {}", e))?;
                         println!("  ✓ Таблиця '{}' створена", table);
@@ -2368,7 +2388,7 @@ impl VM {
             "бд_створити" => {
                 // бд_створити(таблиця, словник_даних) → словник з ід
                 if args.len() >= 2 {
-                    let table = match &args[0] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("бд_створити: назва таблиці має бути рядком")) };
+                    let table = match &args[0] { Value::String(s) => { Self::validate_sql_identifier(s)?; s.clone() }, _ => return Err(anyhow::anyhow!("бд_створити: назва таблиці має бути рядком")) };
                     let data = match &args[1] { Value::Dict(pairs) => pairs.clone(), _ => return Err(anyhow::anyhow!("бд_створити: дані мають бути словником")) };
 
                     let col_names: Vec<String> = data.iter().map(|(k, _)| k.to_display_string()).collect();
@@ -2378,7 +2398,7 @@ impl VM {
                         table, col_names.join(", "), placeholders.join(", "));
 
                     if let Some(conn) = self.get_db_connection() {
-                        let db = conn.lock().unwrap();
+                        let db = conn.lock().map_err(|e| anyhow::anyhow!("Помилка блокування: {}", e))?;
                         let params: Vec<Box<dyn rusqlite::types::ToSql>> = data.iter()
                             .map(|(_, v)| Self::value_to_sql_param(v))
                             .collect();
@@ -2402,11 +2422,11 @@ impl VM {
             "бд_знайти" => {
                 // бд_знайти(таблиця, ід) → словник або нуль
                 if args.len() >= 2 {
-                    let table = match &args[0] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("бд_знайти: назва таблиці")) };
+                    let table = match &args[0] { Value::String(s) => { Self::validate_sql_identifier(s)?; s.clone() }, _ => return Err(anyhow::anyhow!("бд_знайти: назва таблиці")) };
                     let id = match &args[1] { Value::Integer(n) => *n, _ => return Err(anyhow::anyhow!("бд_знайти: ід має бути цілим")) };
 
                     if let Some(conn) = self.get_db_connection() {
-                        let db = conn.lock().unwrap();
+                        let db = conn.lock().map_err(|e| anyhow::anyhow!("Помилка блокування: {}", e))?;
                         let sql = format!("SELECT * FROM {} WHERE ід = ?1", table);
                         let mut stmt = db.prepare(&sql).map_err(|e| anyhow::anyhow!("SQL: {}", e))?;
 
@@ -2437,7 +2457,7 @@ impl VM {
             "бд_всі" | "бд_запит" => {
                 // бд_всі(таблиця) або бд_запит(таблиця, де_словник)
                 if args.is_empty() { return Err(anyhow::anyhow!("{} очікує назву таблиці", name)); }
-                let table = match &args[0] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("назва таблиці має бути рядком")) };
+                let table = match &args[0] { Value::String(s) => { Self::validate_sql_identifier(s)?; s.clone() }, _ => return Err(anyhow::anyhow!("назва таблиці має бути рядком")) };
 
                 let where_clause = if args.len() >= 2 {
                     if let Value::Dict(pairs) = &args[1] {
@@ -2449,7 +2469,7 @@ impl VM {
                 } else { None };
 
                 if let Some(conn) = self.get_db_connection() {
-                    let db = conn.lock().unwrap();
+                    let db = conn.lock().map_err(|e| anyhow::anyhow!("Помилка блокування: {}", e))?;
                     let sql = if let Some((ref where_str, _)) = where_clause {
                         format!("SELECT * FROM {} WHERE {} LIMIT 1000", table, where_str)
                     } else {
@@ -2485,7 +2505,7 @@ impl VM {
             "бд_оновити" => {
                 // бд_оновити(таблиця, ід, дані_словник)
                 if args.len() >= 3 {
-                    let table = match &args[0] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("назва таблиці")) };
+                    let table = match &args[0] { Value::String(s) => { Self::validate_sql_identifier(s)?; s.clone() }, _ => return Err(anyhow::anyhow!("назва таблиці")) };
                     let id = match &args[1] { Value::Integer(n) => *n, _ => return Err(anyhow::anyhow!("ід має бути цілим")) };
                     let data = match &args[2] { Value::Dict(pairs) => pairs.clone(), _ => return Err(anyhow::anyhow!("дані мають бути словником")) };
 
@@ -2496,7 +2516,7 @@ impl VM {
                     let sql = format!("UPDATE {} SET {} WHERE ід = ?{}", table, sets.join(", "), data.len() + 1);
 
                     if let Some(conn) = self.get_db_connection() {
-                        let db = conn.lock().unwrap();
+                        let db = conn.lock().map_err(|e| anyhow::anyhow!("Помилка блокування: {}", e))?;
                         let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = data.iter()
                             .map(|(_, v)| Self::value_to_sql_param(v))
                             .collect();
@@ -2517,11 +2537,11 @@ impl VM {
             "бд_видалити" => {
                 // бд_видалити(таблиця, ід)
                 if args.len() >= 2 {
-                    let table = match &args[0] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("назва таблиці")) };
+                    let table = match &args[0] { Value::String(s) => { Self::validate_sql_identifier(s)?; s.clone() }, _ => return Err(anyhow::anyhow!("назва таблиці")) };
                     let id = match &args[1] { Value::Integer(n) => *n, _ => return Err(anyhow::anyhow!("ід має бути цілим")) };
 
                     if let Some(conn) = self.get_db_connection() {
-                        let db = conn.lock().unwrap();
+                        let db = conn.lock().map_err(|e| anyhow::anyhow!("Помилка блокування: {}", e))?;
                         let sql = format!("DELETE FROM {} WHERE ід = ?1", table);
                         let affected = db.execute(&sql, [id])
                             .map_err(|e| anyhow::anyhow!("SQL: {}", e))?;
@@ -2537,8 +2557,9 @@ impl VM {
             "бд_кількість" => {
                 // бд_кількість(таблиця) → кількість записів
                 if let Some(Value::String(table)) = args.first() {
+                    Self::validate_sql_identifier(table)?;
                     if let Some(conn) = self.get_db_connection() {
-                        let db = conn.lock().unwrap();
+                        let db = conn.lock().map_err(|e| anyhow::anyhow!("Помилка блокування: {}", e))?;
                         let sql = format!("SELECT COUNT(*) FROM {}", table);
                         let count: i64 = db.query_row(&sql, [], |row| row.get(0))
                             .map_err(|e| anyhow::anyhow!("SQL: {}", e))?;
@@ -2555,7 +2576,7 @@ impl VM {
                 // бд_sql(запит, параметри...) → виконує raw SQL
                 if let Some(Value::String(sql)) = args.first() {
                     if let Some(conn) = self.get_db_connection() {
-                        let db = conn.lock().unwrap();
+                        let db = conn.lock().map_err(|e| anyhow::anyhow!("Помилка блокування: {}", e))?;
                         let params: Vec<Box<dyn rusqlite::types::ToSql>> = args[1..].iter()
                             .map(|v| Self::value_to_sql_param(v))
                             .collect();
@@ -3368,6 +3389,13 @@ impl VM {
     // ── Шаблонізатор ──
 
     fn render_template(&mut self, template: &str, data: &Value) -> Result<String> {
+        self.render_template_depth(template, data, 0)
+    }
+
+    fn render_template_depth(&mut self, template: &str, data: &Value, depth: usize) -> Result<String> {
+        if depth > 10 {
+            return Err(anyhow::anyhow!("Шаблон: перевищено максимальну глибину включень (10). Можливо циклічне включити."));
+        }
         let mut result = String::new();
         let chars: Vec<char> = template.chars().collect();
         let mut i = 0;
@@ -3419,9 +3447,9 @@ impl VM {
                     // Обчислюємо умову
                     let cond_val = self.resolve_template_value(condition, data);
                     if cond_val.to_bool() {
-                        result.push_str(&self.render_template(&if_body, data)?);
+                        result.push_str(&self.render_template_depth(&if_body, data, depth + 1)?);
                     } else if let Some(else_b) = else_body {
-                        result.push_str(&self.render_template(&else_b, data)?);
+                        result.push_str(&self.render_template_depth(&else_b, data, depth + 1)?);
                     }
 
                     // Переміщуємо позицію
@@ -3459,7 +3487,7 @@ impl VM {
                                 item_data_pairs.push((Value::String("останній".to_string()), Value::Bool(idx == items.len() - 1)));
 
                                 let item_data = Value::Dict(item_data_pairs);
-                                result.push_str(&self.render_template(body, &item_data)?);
+                                result.push_str(&self.render_template_depth(body, &item_data, depth + 1)?);
                             }
                         }
 
@@ -3476,7 +3504,7 @@ impl VM {
                     ];
                     for path in &paths {
                         if let Ok(content) = std::fs::read_to_string(path) {
-                            result.push_str(&self.render_template(&content, data)?);
+                            result.push_str(&self.render_template_depth(&content, data, depth + 1)?);
                             break;
                         }
                     }
