@@ -14,7 +14,7 @@ pub mod vm {
     pub use tryzub_vm::*;
 }
 
-pub const VERSION: &str = "3.5.0";
+pub const VERSION: &str = "3.6.0";
 pub const AUTHOR: &str = "Мартинюк Євген";
 
 pub fn about() -> String {
@@ -30,6 +30,6 @@ mod tests {
 
     #[test]
     fn test_version() {
-        assert_eq!(VERSION, "3.5.0");
+        assert_eq!(VERSION, "3.6.0");
     }
 }
