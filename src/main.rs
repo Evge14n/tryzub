@@ -1,4 +1,4 @@
-// Мова програмування Тризуб v4.0
+// Мова програмування Тризуб v4.1
 // Автор: Мартинюк Євген
 // Copyright (c) 2025 Мартинюк Євген. Всі права захищені.
 // Ліцензія: MIT
@@ -11,7 +11,7 @@ use std::fs;
 #[derive(Parser)]
 #[command(name = "tryzub")]
 #[command(author = "Мартинюк Євген <evgenmart@gmail.com>")]
-#[command(version = "4.0.0")]
+#[command(version = "4.1.0")]
 #[command(about = "Тризуб — сучасна українська мова програмування ")]
 struct Cli {
     #[command(subcommand)]
@@ -74,7 +74,7 @@ fn main() {
         Commands::New { name } => create_project(name),
         Commands::Repl => run_repl(),
         Commands::Version => {
-            println!("Тризуб v4.0.0");
+            println!("Тризуб v4.1.0");
             println!("Автор: Мартинюк Євген");
             println!("Ліцензія: MIT");
             println!("https://github.com/Evge14n/tryzub");
@@ -258,7 +258,7 @@ fn run_tests(file: PathBuf) -> Result<()> {
 fn run_repl() -> Result<()> {
     use std::io::{self, Write, BufRead};
 
-    println!("Тризуб v4.0.0 — Інтерактивний режим");
+    println!("Тризуб v4.1.0 — Інтерактивний режим");
     println!("Введіть вираз або інструкцію. :вихід для виходу.");
     println!("Команди: :тип <вираз>, :допомога");
     println!();
