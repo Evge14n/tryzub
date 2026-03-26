@@ -2755,7 +2755,7 @@ impl VM {
 
                     // Header
                     let header = serde_json::json!({"алг": "ТХ256", "тип": "JWT"});
-                    let header_b64 = Self::base64_encode(&serde_json::to_string(&header).unwrap());
+                    let header_b64 = Self::base64_encode(&serde_json::to_string(&header).unwrap_or_default());
 
                     // Payload
                     let mut payload = VM::value_to_json(data);
@@ -2763,7 +2763,7 @@ impl VM {
                         map.insert("exp".to_string(), serde_json::json!(exp));
                         map.insert("iat".to_string(), serde_json::json!(now));
                     }
-                    let payload_b64 = Self::base64_encode(&serde_json::to_string(&payload).unwrap());
+                    let payload_b64 = Self::base64_encode(&serde_json::to_string(&payload).unwrap_or_default());
 
                     // Signature (HMAC-like з DefaultHasher)
                     let sign_input = format!("{}.{}.{}", header_b64, payload_b64, secret);
