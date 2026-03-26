@@ -281,6 +281,9 @@ impl VM {
             // Ввід/вивід
             scope.set("ввід".to_string(), Value::BuiltinFn("ввід".to_string()));
 
+            // Генератори
+            scope.set("генератор".to_string(), Value::BuiltinFn("генератор".to_string()));
+
             // Час
             scope.set("час_зараз".to_string(), Value::BuiltinFn("час_зараз".to_string()));
             scope.set("час_затримка".to_string(), Value::BuiltinFn("час_затримка".to_string()));
@@ -1244,14 +1247,9 @@ impl VM {
         }
 
         // ── Методи генераторів ──
-        if let Value::Generator { ref body, ref closure, current_index, executed, .. } = obj {
-            // Кожен генератор отримує унікальний ID
-            let gen_id = if !executed {
-                self.generator_id_counter += 1;
-                self.generator_id_counter
-            } else {
-                current_index
-            };
+        if let Value::Generator { ref body, ref closure, current_index, .. } = obj {
+            // ID генератора = current_index (встановлюється при створенні)
+            let gen_id = current_index;
             match method {
                 "в_масив" | "наступний" | "взяти" => {
                     // Виконуємо тіло ТІЛЬКИ ОДИН РАЗ, кешуємо результат
@@ -1533,6 +1531,36 @@ impl VM {
                     _ => Err(anyhow::anyhow!("абс очікує число")),
                 }
             }
+            // ── Генератори ──
+            "генератор" => {
+                // генератор(функція) — створює генератор з функції що містить віддати
+                match args.first() {
+                    Some(Value::Function { body, closure, .. }) => {
+                        self.generator_id_counter += 1;
+                        Ok(Value::Generator {
+                            params: vec![],
+                            body: body.clone(),
+                            closure: closure.clone(),
+                            yielded_values: vec![],
+                            current_index: self.generator_id_counter,
+                            executed: false,
+                        })
+                    }
+                    Some(Value::Lambda { body: LambdaBody::Block(stmts), closure, .. }) => {
+                        self.generator_id_counter += 1;
+                        Ok(Value::Generator {
+                            params: vec![],
+                            body: stmts.clone(),
+                            closure: closure.clone(),
+                            yielded_values: vec![],
+                            current_index: self.generator_id_counter,
+                            executed: false,
+                        })
+                    }
+                    _ => Err(anyhow::anyhow!("генератор очікує функцію")),
+                }
+            }
+
             // ── Ввід ──
             "ввід" => {
                 use std::io::{self, Write, BufRead};
