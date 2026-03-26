@@ -249,6 +249,10 @@ pub struct VM {
     stdlib_paths: Vec<String>,
     /// Вже завантажені модулі
     loaded_modules: HashMap<String, bool>,
+    /// Кеш виконаних генераторів: id → (yielded_values, current_index)
+    generator_cache: HashMap<usize, (Vec<Value>, usize)>,
+    /// Лічильник ID для генераторів
+    generator_id_counter: usize,
 }
 
 impl VM {
@@ -273,6 +277,13 @@ impl VM {
             scope.set("словник".to_string(), Value::BuiltinFn("словник".to_string()));
             scope.set("множина".to_string(), Value::BuiltinFn("множина".to_string()));
             scope.set("виконати_ефект".to_string(), Value::BuiltinFn("виконати_ефект".to_string()));
+
+            // Ввід/вивід
+            scope.set("ввід".to_string(), Value::BuiltinFn("ввід".to_string()));
+
+            // Час
+            scope.set("час_зараз".to_string(), Value::BuiltinFn("час_зараз".to_string()));
+            scope.set("час_затримка".to_string(), Value::BuiltinFn("час_затримка".to_string()));
 
             // JSON
             scope.set("json_розібрати".to_string(), Value::BuiltinFn("json_розібрати".to_string()));
@@ -330,6 +341,8 @@ impl VM {
                 "../stdlib".to_string(),
             ],
             loaded_modules: HashMap::new(),
+            generator_cache: HashMap::new(),
+            generator_id_counter: 0,
         }
     }
 
@@ -1231,30 +1244,51 @@ impl VM {
         }
 
         // ── Методи генераторів ──
-        if let Value::Generator { ref body, ref closure, .. } = obj {
+        if let Value::Generator { ref body, ref closure, current_index, executed, .. } = obj {
+            // Кожен генератор отримує унікальний ID
+            let gen_id = if !executed {
+                self.generator_id_counter += 1;
+                self.generator_id_counter
+            } else {
+                current_index
+            };
             match method {
                 "в_масив" | "наступний" | "взяти" => {
-                    // Виконуємо тіло генератора, збираємо всі yielded значення
-                    let collected = self.execute_generator(body.clone(), closure.clone())?;
+                    // Виконуємо тіло ТІЛЬКИ ОДИН РАЗ, кешуємо результат
+                    if !self.generator_cache.contains_key(&gen_id) {
+                        let collected = self.execute_generator(body.clone(), closure.clone())?;
+                        self.generator_cache.insert(gen_id, (collected, 0));
+                    }
+
                     match method {
-                        "в_масив" => return Ok(Value::Array(collected)),
+                        "в_масив" => {
+                            let (values, _) = self.generator_cache.get(&gen_id).unwrap();
+                            return Ok(Value::Array(values.clone()));
+                        }
                         "взяти" => {
                             let n = match args.first() {
                                 Some(Value::Integer(n)) => *n as usize,
-                                _ => collected.len(),
+                                _ => usize::MAX,
                             };
-                            return Ok(Value::Array(collected.into_iter().take(n).collect()));
+                            let (values, _) = self.generator_cache.get(&gen_id).unwrap();
+                            return Ok(Value::Array(values.iter().take(n).cloned().collect()));
                         }
                         "наступний" => {
-                            return Ok(collected.first().cloned().map(|v| Value::EnumVariant {
-                                type_name: "Опція".to_string(),
-                                variant: "Деякий".to_string(),
-                                fields: vec![v],
-                            }).unwrap_or(Value::EnumVariant {
+                            let (values, idx) = self.generator_cache.get_mut(&gen_id).unwrap();
+                            if *idx < values.len() {
+                                let val = values[*idx].clone();
+                                *idx += 1;
+                                return Ok(Value::EnumVariant {
+                                    type_name: "Опція".to_string(),
+                                    variant: "Деякий".to_string(),
+                                    fields: vec![val],
+                                });
+                            }
+                            return Ok(Value::EnumVariant {
                                 type_name: "Опція".to_string(),
                                 variant: "Нічого".to_string(),
                                 fields: vec![],
-                            }));
+                            });
                         }
                         _ => {}
                     }
@@ -1499,6 +1533,36 @@ impl VM {
                     _ => Err(anyhow::anyhow!("абс очікує число")),
                 }
             }
+            // ── Ввід ──
+            "ввід" => {
+                use std::io::{self, Write, BufRead};
+                // Якщо є аргумент — друкуємо як підказку
+                if let Some(Value::String(prompt)) = args.first() {
+                    print!("{}", prompt);
+                    io::stdout().flush().ok();
+                }
+                let mut line = String::new();
+                io::stdin().lock().read_line(&mut line).ok();
+                Ok(Value::String(line.trim_end_matches('\n').trim_end_matches('\r').to_string()))
+            }
+
+            // ── Час ──
+            "час_зараз" => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default();
+                Ok(Value::Float(now.as_secs_f64() * 1000.0)) // мілісекунди
+            }
+            "час_затримка" => {
+                match args.first() {
+                    Some(Value::Integer(ms)) => {
+                        std::thread::sleep(std::time::Duration::from_millis(*ms as u64));
+                        Ok(Value::Null)
+                    }
+                    _ => Err(anyhow::anyhow!("час_затримка очікує мілісекунди")),
+                }
+            }
+
             // ── JSON ──
             "json_розібрати" => {
                 match args.first() {
