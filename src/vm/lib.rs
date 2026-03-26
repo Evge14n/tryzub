@@ -1760,8 +1760,7 @@ impl VM {
                 ));
             }
         }
-        let first = name.chars().next().unwrap();
-        if first.is_ascii_digit() {
+        if name.chars().next().map_or(false, |c| c.is_ascii_digit()) {
             return Err(anyhow::anyhow!("SQL ідентифікатор '{}' не може починатись з цифри", name));
         }
         Ok(())
@@ -2353,6 +2352,7 @@ impl VM {
 
                     for (key, val) in &schema {
                         let col_name = key.to_display_string();
+                        Self::validate_sql_identifier(&col_name)?;
                         let col_type = match val {
                             Value::String(t) => match t.as_str() {
                                 "тхт" | "текст" => "TEXT",
@@ -2392,6 +2392,7 @@ impl VM {
                     let data = match &args[1] { Value::Dict(pairs) => pairs.clone(), _ => return Err(anyhow::anyhow!("бд_створити: дані мають бути словником")) };
 
                     let col_names: Vec<String> = data.iter().map(|(k, _)| k.to_display_string()).collect();
+                    for cn in &col_names { Self::validate_sql_identifier(cn)?; }
                     let placeholders: Vec<String> = (0..data.len()).map(|i| format!("?{}", i + 1)).collect();
 
                     let sql = format!("INSERT INTO {} ({}) VALUES ({})",
@@ -2509,6 +2510,7 @@ impl VM {
                     let id = match &args[1] { Value::Integer(n) => *n, _ => return Err(anyhow::anyhow!("ід має бути цілим")) };
                     let data = match &args[2] { Value::Dict(pairs) => pairs.clone(), _ => return Err(anyhow::anyhow!("дані мають бути словником")) };
 
+                    for (k, _) in &data { Self::validate_sql_identifier(&k.to_display_string())?; }
                     let sets: Vec<String> = data.iter().enumerate()
                         .map(|(i, (k, _))| format!("{} = ?{}", k.to_display_string(), i + 1))
                         .collect();
@@ -3811,5 +3813,182 @@ mod tests {
         let tokens = tokenize(source).unwrap();
         let program = parse(tokens).unwrap();
         assert!(execute(program, vec![]).is_ok());
+    }
+
+    #[test]
+    fn test_auth_hash_verify() {
+        // Тест на рівні VM напряму — без парсера
+        let mut vm = VM::new();
+        let hash = vm.call_builtin("авт_хешувати", vec![Value::String("пароль123".to_string())]).unwrap();
+        let hash_str = hash.to_display_string();
+
+        // Правильний пароль
+        let ok = vm.call_builtin("авт_перевірити", vec![
+            Value::String("пароль123".to_string()),
+            Value::String(hash_str.clone()),
+        ]).unwrap();
+        assert!(matches!(ok, Value::Bool(true)));
+
+        // Невірний пароль
+        let bad = vm.call_builtin("авт_перевірити", vec![
+            Value::String("невірний".to_string()),
+            Value::String(hash_str),
+        ]).unwrap();
+        assert!(matches!(bad, Value::Bool(false)));
+    }
+
+    #[test]
+    fn test_auth_jwt_roundtrip() {
+        let mut vm = VM::new();
+        // Створюємо токен
+        let data = Value::Dict(vec![
+            (Value::String("ід".to_string()), Value::Integer(42)),
+            (Value::String("роль".to_string()), Value::String("адмін".to_string())),
+        ]);
+        let token = vm.call_builtin("авт_створити_токен", vec![
+            data, Value::String("секрет".to_string()),
+        ]).unwrap();
+
+        // Перевіряємо з правильним секретом
+        let result = vm.call_builtin("авт_перевірити_токен", vec![
+            token.clone(), Value::String("секрет".to_string()),
+        ]).unwrap();
+        assert!(matches!(result, Value::EnumVariant { variant, .. } if variant == "Успіх"));
+
+        // Перевіряємо з невірним секретом
+        let bad = vm.call_builtin("авт_перевірити_токен", vec![
+            token, Value::String("невірний".to_string()),
+        ]).unwrap();
+        assert!(matches!(bad, Value::EnumVariant { variant, .. } if variant == "Помилка"));
+    }
+
+    #[test]
+    fn test_template_rendering() {
+        let mut vm = VM::new();
+        // Проста змінна
+        let data = Value::Dict(vec![
+            (Value::String("імя".to_string()), Value::String("Тризуб".to_string())),
+        ]);
+        let result = vm.render_template("Привіт, {імя}!", &data).unwrap();
+        assert!(result.contains("Тризуб"));
+
+        // Умова
+        let data2 = Value::Dict(vec![
+            (Value::String("показати".to_string()), Value::Bool(true)),
+        ]);
+        let result2 = vm.render_template("{якщо показати}Видно{/якщо}", &data2).unwrap();
+        assert!(result2.contains("Видно"));
+
+        // Цикл
+        let data3 = Value::Dict(vec![
+            (Value::String("елементи".to_string()), Value::Array(vec![
+                Value::Integer(1), Value::Integer(2), Value::Integer(3),
+            ])),
+        ]);
+        let result3 = vm.render_template("{для х в елементи}[{х}]{/для}", &data3).unwrap();
+        assert!(result3.contains("[1]"));
+        assert!(result3.contains("[2]"));
+        assert!(result3.contains("[3]"));
+    }
+
+    #[test]
+    fn test_sqlite_crud() {
+        let mut vm = VM::new();
+        // Відкриваємо in-memory БД
+        vm.call_builtin("бд_відкрити", vec![Value::String(":memory:".to_string())]).unwrap();
+
+        // Створюємо таблицю
+        let schema = Value::Dict(vec![
+            (Value::String("назва".to_string()), Value::String("тхт".to_string())),
+            (Value::String("число".to_string()), Value::String("цл64".to_string())),
+        ]);
+        vm.call_builtin("бд_створити_таблицю", vec![
+            Value::String("тест".to_string()), schema,
+        ]).unwrap();
+
+        // Створюємо запис
+        let data = Value::Dict(vec![
+            (Value::String("назва".to_string()), Value::String("один".to_string())),
+            (Value::String("число".to_string()), Value::Integer(42)),
+        ]);
+        let created = vm.call_builtin("бд_створити", vec![
+            Value::String("тест".to_string()), data,
+        ]).unwrap();
+        assert!(matches!(created, Value::Dict(_)));
+
+        // Кількість
+        let count = vm.call_builtin("бд_кількість", vec![
+            Value::String("тест".to_string()),
+        ]).unwrap();
+        assert!(matches!(count, Value::Integer(1)));
+
+        // Знайти
+        let found = vm.call_builtin("бд_знайти", vec![
+            Value::String("тест".to_string()), Value::Integer(1),
+        ]).unwrap();
+        assert!(!matches!(found, Value::Null));
+
+        // Оновити
+        let update_data = Value::Dict(vec![
+            (Value::String("число".to_string()), Value::Integer(99)),
+        ]);
+        vm.call_builtin("бд_оновити", vec![
+            Value::String("тест".to_string()), Value::Integer(1), update_data,
+        ]).unwrap();
+
+        // Видалити
+        vm.call_builtin("бд_видалити", vec![
+            Value::String("тест".to_string()), Value::Integer(1),
+        ]).unwrap();
+
+        let count2 = vm.call_builtin("бд_кількість", vec![
+            Value::String("тест".to_string()),
+        ]).unwrap();
+        assert!(matches!(count2, Value::Integer(0)));
+    }
+
+    #[test]
+    fn test_sql_injection_prevention() {
+        assert!(VM::validate_sql_identifier("товари").is_ok());
+        assert!(VM::validate_sql_identifier("моя_таблиця").is_ok());
+        assert!(VM::validate_sql_identifier("назва123").is_ok());
+        assert!(VM::validate_sql_identifier("users; DROP TABLE--").is_err());
+        assert!(VM::validate_sql_identifier("table name").is_err());
+        assert!(VM::validate_sql_identifier("").is_err());
+        assert!(VM::validate_sql_identifier("123start").is_err());
+    }
+
+    #[test]
+    fn test_web_response_builtins() {
+        let mut vm = VM::new();
+
+        let html = vm.call_builtin("веб_html", vec![Value::String("<h1>Тест</h1>".to_string())]).unwrap();
+        assert!(matches!(html, Value::Dict(_)));
+
+        let json = vm.call_builtin("веб_json", vec![
+            Value::Dict(vec![(Value::String("ключ".to_string()), Value::String("значення".to_string()))]),
+        ]).unwrap();
+        assert!(matches!(json, Value::Dict(_)));
+
+        let err = vm.call_builtin("веб_помилка", vec![Value::Integer(404), Value::String("Не знайдено".to_string())]).unwrap();
+        assert!(matches!(err, Value::Dict(_)));
+
+        let redir = vm.call_builtin("веб_перенаправити", vec![Value::String("/головна".to_string())]).unwrap();
+        assert!(matches!(redir, Value::Dict(_)));
+    }
+
+    #[test]
+    fn test_env_and_random() {
+        let mut vm = VM::new();
+        // PATH існує на всіх системах
+        let path = vm.call_builtin("середовище", vec![Value::String("PATH".to_string())]).unwrap();
+        assert!(matches!(path, Value::String(_)));
+
+        let num = vm.call_builtin("випадкове", vec![Value::Integer(1), Value::Integer(100)]).unwrap();
+        if let Value::Integer(n) = num {
+            assert!(n >= 1 && n <= 100);
+        } else {
+            panic!("випадкове має повернути Integer");
+        }
     }
 }
