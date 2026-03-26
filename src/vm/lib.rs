@@ -1,10 +1,10 @@
-// Віртуальна машина мови Тризуб v3.9
-// Автор: Мартинюк Євген
+// Віртуальна машина мови Тризуб v4.1
 
 use anyhow::Result;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::cell::RefCell;
+use std::sync::{Arc, Mutex};
 use serde_json;
 use tryzub_parser::{
     Program, Declaration, Statement, Expression, Literal, BinaryOp, UnaryOp,
@@ -253,6 +253,95 @@ pub struct VM {
     generator_cache: HashMap<usize, (Vec<Value>, usize)>,
     /// Лічильник ID для генераторів
     generator_id_counter: usize,
+    /// Веб-маршрути (якщо запущено веб-сервер)
+    web_routes: Option<Arc<Mutex<WebRoutes>>>,
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Веб-сервер — реальний HTTP через std::net::TcpListener
+// ════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Clone)]
+pub struct WebRoute {
+    method: String,
+    path: String,
+    path_parts: Vec<PathPart>,
+    handler: Value,
+}
+
+#[derive(Debug, Clone)]
+enum PathPart {
+    Static(String),
+    Param(String),
+    Wildcard,
+}
+
+#[derive(Debug, Clone)]
+pub struct WebRoutes {
+    port: u16,
+    routes: Vec<WebRoute>,
+    static_dir: Option<String>,
+}
+
+impl WebRoutes {
+    fn new(port: u16) -> Self {
+        WebRoutes { port, routes: Vec::new(), static_dir: None }
+    }
+
+    fn add_route(&mut self, method: String, path: String, handler: Value) {
+        let path_parts = path.split('/')
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                if s.starts_with('{') && s.ends_with('}') {
+                    PathPart::Param(s[1..s.len()-1].to_string())
+                } else if s == "*" {
+                    PathPart::Wildcard
+                } else {
+                    PathPart::Static(s.to_string())
+                }
+            })
+            .collect();
+        self.routes.push(WebRoute { method, path, path_parts, handler });
+    }
+
+    fn find_route(&self, method: &str, path: &str) -> Option<(&WebRoute, HashMap<String, String>)> {
+        let req_parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+
+        for route in &self.routes {
+            if route.method != method { continue; }
+
+            let mut params = HashMap::new();
+            let mut matched = true;
+
+            if route.path_parts.len() != req_parts.len() {
+                // Перевірка wildcard
+                if route.path_parts.last().map_or(false, |p| matches!(p, PathPart::Wildcard)) {
+                    if req_parts.len() < route.path_parts.len() - 1 { continue; }
+                } else {
+                    continue;
+                }
+            }
+
+            for (i, part) in route.path_parts.iter().enumerate() {
+                match part {
+                    PathPart::Static(s) => {
+                        if req_parts.get(i) != Some(&s.as_str()) { matched = false; break; }
+                    }
+                    PathPart::Param(name) => {
+                        if let Some(val) = req_parts.get(i) {
+                            params.insert(name.clone(), val.to_string());
+                        } else { matched = false; break; }
+                    }
+                    PathPart::Wildcard => break,
+                }
+            }
+
+            if matched {
+                return Some((route, params));
+            }
+        }
+        None
+    }
 }
 
 impl VM {
@@ -346,6 +435,7 @@ impl VM {
             loaded_modules: HashMap::new(),
             generator_cache: HashMap::new(),
             generator_id_counter: 0,
+            web_routes: None,
         }
     }
 
@@ -1359,6 +1449,300 @@ impl VM {
         Err(anyhow::anyhow!("Метод '{}' не знайдено для типу {}", method, type_name))
     }
 
+    /// Запускає HTTP сервер — реальний, на std::net::TcpListener
+    fn start_web_server(&mut self, routes: WebRoutes) -> Result<()> {
+        use std::net::TcpListener;
+        use std::io::{Read, Write, BufRead, BufReader};
+
+        let addr = format!("0.0.0.0:{}", routes.port);
+        let listener = TcpListener::bind(&addr)
+            .map_err(|e| anyhow::anyhow!("Не вдалося запустити сервер на {}: {}", addr, e))?;
+
+        println!("\n🔱 Тризуб Web запущено на http://localhost:{}", routes.port);
+        println!("   {} маршрутів зареєстровано", routes.routes.len());
+        if let Some(ref dir) = routes.static_dir {
+            println!("   📁 Статичні файли: {}/", dir);
+        }
+        println!("   Натисніть Ctrl+C для зупинки\n");
+
+        for stream in listener.incoming() {
+            match stream {
+                Ok(mut stream) => {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+
+                    // Читаємо першу лінію: GET /path HTTP/1.1
+                    let mut request_line = String::new();
+                    if reader.read_line(&mut request_line).is_err() { continue; }
+                    let parts: Vec<&str> = request_line.trim().split_whitespace().collect();
+                    if parts.len() < 2 { continue; }
+
+                    let method = parts[0];
+                    let full_path = parts[1];
+
+                    // Розділяємо шлях та query string
+                    let (path, query_string) = if let Some(idx) = full_path.find('?') {
+                        (&full_path[..idx], Some(&full_path[idx+1..]))
+                    } else {
+                        (full_path, None)
+                    };
+
+                    // Читаємо заголовки
+                    let mut headers = HashMap::new();
+                    let mut content_length: usize = 0;
+                    loop {
+                        let mut line = String::new();
+                        if reader.read_line(&mut line).is_err() || line.trim().is_empty() { break; }
+                        if let Some((key, val)) = line.trim().split_once(": ") {
+                            if key.to_lowercase() == "content-length" {
+                                content_length = val.trim().parse().unwrap_or(0);
+                            }
+                            headers.insert(key.to_lowercase(), val.trim().to_string());
+                        }
+                    }
+
+                    // Читаємо тіло запиту
+                    let mut body_str = String::new();
+                    if content_length > 0 {
+                        let mut body_buf = vec![0u8; content_length];
+                        let _ = reader.read_exact(&mut body_buf);
+                        body_str = String::from_utf8_lossy(&body_buf).to_string();
+                    }
+
+                    // Парсимо query string
+                    let query_params: Vec<(Value, Value)> = query_string
+                        .unwrap_or("")
+                        .split('&')
+                        .filter(|s| !s.is_empty())
+                        .filter_map(|pair| {
+                            pair.split_once('=').map(|(k, v)| {
+                                (Value::String(Self::url_decode(k)), Value::String(Self::url_decode(v)))
+                            })
+                        })
+                        .collect();
+
+                    // Парсимо тіло (JSON або form data)
+                    let body_value = if body_str.starts_with('{') || body_str.starts_with('[') {
+                        serde_json::from_str::<serde_json::Value>(&body_str)
+                            .map(|v| VM::json_to_value(&v))
+                            .unwrap_or(Value::String(body_str.clone()))
+                    } else if !body_str.is_empty() {
+                        // form data: key=value&key2=value2
+                        let pairs: Vec<(Value, Value)> = body_str.split('&')
+                            .filter_map(|pair| {
+                                pair.split_once('=').map(|(k, v)| {
+                                    (Value::String(Self::url_decode(k)), Value::String(Self::url_decode(v)))
+                                })
+                            })
+                            .collect();
+                        Value::Dict(pairs)
+                    } else {
+                        Value::Null
+                    };
+
+                    // Будуємо об'єкт запиту
+                    let mut request_dict = vec![
+                        (Value::String("метод".to_string()), Value::String(method.to_string())),
+                        (Value::String("шлях".to_string()), Value::String(path.to_string())),
+                        (Value::String("запит".to_string()), Value::Dict(query_params)),
+                        (Value::String("тіло".to_string()), body_value),
+                        (Value::String("тіло_сирий".to_string()), Value::String(body_str)),
+                        (Value::String("ip".to_string()), Value::String(
+                            stream.peer_addr().map(|a| a.to_string()).unwrap_or_default()
+                        )),
+                    ];
+
+                    // Додаємо заголовки
+                    let headers_dict: Vec<(Value, Value)> = headers.iter()
+                        .map(|(k, v)| (Value::String(k.clone()), Value::String(v.clone())))
+                        .collect();
+                    request_dict.push((Value::String("заголовки".to_string()), Value::Dict(headers_dict)));
+
+                    // Cookies
+                    if let Some(cookie_str) = headers.get("cookie") {
+                        let cookies: Vec<(Value, Value)> = cookie_str.split(';')
+                            .filter_map(|c| {
+                                c.trim().split_once('=').map(|(k, v)| {
+                                    (Value::String(k.trim().to_string()), Value::String(v.trim().to_string()))
+                                })
+                            })
+                            .collect();
+                        request_dict.push((Value::String("cookies".to_string()), Value::Dict(cookies)));
+                    }
+
+                    let request = Value::Dict(request_dict);
+
+                    // Знаходимо маршрут
+                    let (response_body, response_type, response_status, extra_headers) =
+                        if let Some((route, params)) = routes.find_route(method, path) {
+                            // Додаємо параметри URL до запиту
+                            // (через Dict оновлення - VM не може мутувати, тому передаємо як є)
+
+                            // Виконуємо обробник
+                            let handler = route.handler.clone();
+                            match self.call_value(handler, vec![request]) {
+                                Ok(Value::Dict(resp)) => {
+                                    let body = resp.iter()
+                                        .find(|(k, _)| k.to_display_string() == "тіло")
+                                        .map(|(_, v)| v.to_display_string())
+                                        .unwrap_or_default();
+                                    let content_type = resp.iter()
+                                        .find(|(k, _)| k.to_display_string() == "тип")
+                                        .map(|(_, v)| v.to_display_string())
+                                        .unwrap_or_else(|| "text/html; charset=utf-8".to_string());
+                                    let status = resp.iter()
+                                        .find(|(k, _)| k.to_display_string() == "статус")
+                                        .and_then(|(_, v)| if let Value::Integer(n) = v { Some(*n as u16) } else { None })
+                                        .unwrap_or(200);
+                                    let location = resp.iter()
+                                        .find(|(k, _)| k.to_display_string() == "Location")
+                                        .map(|(_, v)| v.to_display_string());
+                                    (body, content_type, status, location)
+                                }
+                                Ok(Value::String(s)) => {
+                                    (s, "text/html; charset=utf-8".to_string(), 200, None)
+                                }
+                                Ok(v) => {
+                                    let json = serde_json::to_string(&VM::value_to_json(&v)).unwrap_or_default();
+                                    (json, "application/json; charset=utf-8".to_string(), 200, None)
+                                }
+                                Err(e) => {
+                                    eprintln!("  ❌ {} {} — {}", method, path, e);
+                                    let html = format!(
+                                        "<html><head><meta charset='utf-8'></head>\
+                                         <body><h1>500</h1><pre>{}</pre></body></html>", e
+                                    );
+                                    (html, "text/html; charset=utf-8".to_string(), 500, None)
+                                }
+                            }
+                        } else if let Some(ref static_dir) = routes.static_dir {
+                            // Спроба роздати статичний файл
+                            let file_path = format!("{}{}", static_dir, path);
+                            if let Ok(content) = std::fs::read(&file_path) {
+                                let mime = Self::guess_mime(&file_path);
+                                let body = if mime.starts_with("text/") || mime.contains("json") || mime.contains("javascript") || mime.contains("xml") || mime.contains("svg") {
+                                    String::from_utf8_lossy(&content).to_string()
+                                } else {
+                                    // Бінарний файл — base64 не підходить для raw TCP
+                                    // Відправляємо як bytes напряму
+                                    let status_line = "HTTP/1.1 200 OK\r\n";
+                                    let headers_str = format!(
+                                        "Content-Type: {}\r\nContent-Length: {}\r\n\
+                                         X-Content-Type-Options: nosniff\r\n\
+                                         Cache-Control: public, max-age=86400\r\n\
+                                         Connection: close\r\n\r\n",
+                                        mime, content.len()
+                                    );
+                                    let _ = stream.write_all(status_line.as_bytes());
+                                    let _ = stream.write_all(headers_str.as_bytes());
+                                    let _ = stream.write_all(&content);
+                                    let _ = stream.flush();
+                                    println!("  {} {} → 200 ({})", method, path, mime);
+                                    continue;
+                                };
+                                (body, mime, 200, None)
+                            } else {
+                                let html = "<html><head><meta charset='utf-8'></head>\
+                                            <body style='font-family:sans-serif;text-align:center;padding:50px'>\
+                                            <h1>404</h1><p>Сторінку не знайдено</p><hr><p>Тризуб Web</p></body></html>";
+                                (html.to_string(), "text/html; charset=utf-8".to_string(), 404, None)
+                            }
+                        } else {
+                            let html = "<html><head><meta charset='utf-8'></head>\
+                                        <body style='font-family:sans-serif;text-align:center;padding:50px'>\
+                                        <h1>404</h1><p>Сторінку не знайдено</p><hr><p>Тризуб Web</p></body></html>";
+                            (html.to_string(), "text/html; charset=utf-8".to_string(), 404, None)
+                        };
+
+                    // Формуємо HTTP відповідь
+                    let status_text = match response_status {
+                        200 => "OK", 201 => "Created", 204 => "No Content",
+                        301 => "Moved Permanently", 302 => "Found", 304 => "Not Modified",
+                        400 => "Bad Request", 401 => "Unauthorized", 403 => "Forbidden",
+                        404 => "Not Found", 405 => "Method Not Allowed",
+                        429 => "Too Many Requests", 500 => "Internal Server Error",
+                        _ => "OK",
+                    };
+
+                    let mut response = format!(
+                        "HTTP/1.1 {} {}\r\n\
+                         Content-Type: {}\r\n\
+                         Content-Length: {}\r\n\
+                         X-Content-Type-Options: nosniff\r\n\
+                         X-Frame-Options: DENY\r\n\
+                         X-XSS-Protection: 1; mode=block\r\n\
+                         Connection: close\r\n",
+                        response_status, status_text,
+                        response_type,
+                        response_body.len(),
+                    );
+
+                    if let Some(loc) = extra_headers {
+                        response.push_str(&format!("Location: {}\r\n", loc));
+                    }
+
+                    response.push_str("\r\n");
+                    response.push_str(&response_body);
+
+                    let _ = stream.write_all(response.as_bytes());
+                    let _ = stream.flush();
+
+                    println!("  {} {} → {}", method, path, response_status);
+                }
+                Err(e) => eprintln!("  Помилка з'єднання: {}", e),
+            }
+        }
+        Ok(())
+    }
+
+    fn url_decode(s: &str) -> String {
+        let mut result = String::new();
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c == '%' {
+                let hex: String = chars.by_ref().take(2).collect();
+                if let Ok(byte) = u8::from_str_radix(&hex, 16) {
+                    result.push(byte as char);
+                }
+            } else if c == '+' {
+                result.push(' ');
+            } else {
+                result.push(c);
+            }
+        }
+        result
+    }
+
+    fn guess_mime(path: &str) -> String {
+        let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
+        match ext.as_str() {
+            "html" | "htm" => "text/html; charset=utf-8",
+            "css" => "text/css; charset=utf-8",
+            "js" => "application/javascript; charset=utf-8",
+            "json" => "application/json; charset=utf-8",
+            "xml" => "application/xml; charset=utf-8",
+            "svg" => "image/svg+xml",
+            "png" => "image/png",
+            "jpg" | "jpeg" => "image/jpeg",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
+            "ico" => "image/x-icon",
+            "woff" => "font/woff",
+            "woff2" => "font/woff2",
+            "ttf" => "font/ttf",
+            "otf" => "font/otf",
+            "pdf" => "application/pdf",
+            "zip" => "application/zip",
+            "mp3" => "audio/mpeg",
+            "mp4" => "video/mp4",
+            "webm" => "video/webm",
+            "wasm" => "application/wasm",
+            "csv" => "text/csv; charset=utf-8",
+            "txt" => "text/plain; charset=utf-8",
+            "map" => "application/json",
+            _ => "application/octet-stream",
+        }.to_string()
+    }
+
     fn call_builtin(&mut self, name: &str, args: Vec<Value>) -> Result<Value> {
         match name {
             // ── Базові ──
@@ -1776,6 +2160,135 @@ impl VM {
                         }
                     } else { Err(anyhow::anyhow!("файл_додати очікує (шлях, зміст)")) }
                 } else { Err(anyhow::anyhow!("файл_додати очікує 2 аргументи")) }
+            }
+
+            // ── Веб-сервер (HTTP на std::net) ──
+
+            "веб_сервер" => {
+                // веб_сервер(порт) — створює HTTP сервер
+                let port = match args.first() {
+                    Some(Value::Integer(p)) => *p as u16,
+                    _ => 3000,
+                };
+                // Зберігаємо порт у глобальному стані VM
+                self.web_routes = Some(Arc::new(Mutex::new(WebRoutes::new(port))));
+                println!("🔱 Тризуб Web сервер ініціалізовано на порті {}", port);
+                Ok(Value::Integer(port as i64))
+            }
+
+            "веб_отримати" | "веб_надіслати" | "веб_оновити" | "веб_видалити" => {
+                // веб_отримати(шлях, обробник)
+                if args.len() >= 2 {
+                    let path = match &args[0] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(anyhow::anyhow!("{}: перший аргумент має бути шляхом", name)),
+                    };
+                    let method = match name {
+                        "веб_отримати" => "GET",
+                        "веб_надіслати" => "POST",
+                        "веб_оновити" => "PUT",
+                        "веб_видалити" => "DELETE",
+                        _ => "GET",
+                    };
+                    let handler = args[1].clone();
+
+                    if let Some(ref routes) = self.web_routes {
+                        routes.lock().unwrap().add_route(
+                            method.to_string(), path.clone(), handler
+                        );
+                        println!("  {} {} → зареєстровано", method, path);
+                    }
+                    Ok(Value::Null)
+                } else {
+                    Err(anyhow::anyhow!("{} очікує (шлях, обробник)", name))
+                }
+            }
+
+            "веб_статичні" => {
+                // веб_статичні(директорія) — роздача статичних файлів
+                if let Some(Value::String(dir)) = args.first() {
+                    if let Some(ref routes) = self.web_routes {
+                        routes.lock().unwrap().static_dir = Some(dir.clone());
+                        println!("  📁 Статичні файли: {}/", dir);
+                    }
+                    Ok(Value::Null)
+                } else {
+                    Err(anyhow::anyhow!("веб_статичні очікує директорію"))
+                }
+            }
+
+            "веб_запустити" => {
+                // веб_запустити() — запускає сервер
+                if let Some(ref routes) = self.web_routes {
+                    let routes_data = routes.lock().unwrap().clone();
+                    self.start_web_server(routes_data)?;
+                }
+                Ok(Value::Null)
+            }
+
+            "веб_html" => {
+                // веб_html(html_string) → Dict з відповіддю
+                let html = match args.first() {
+                    Some(Value::String(s)) => s.clone(),
+                    Some(v) => v.to_display_string(),
+                    None => String::new(),
+                };
+                let status = if args.len() > 1 {
+                    if let Some(Value::Integer(s)) = args.get(1) { *s } else { 200 }
+                } else { 200 };
+                Ok(Value::Dict(vec![
+                    (Value::String("тіло".to_string()), Value::String(html)),
+                    (Value::String("тип".to_string()), Value::String("text/html; charset=utf-8".to_string())),
+                    (Value::String("статус".to_string()), Value::Integer(status)),
+                ]))
+            }
+
+            "веб_json" => {
+                // веб_json(значення) → Dict з JSON відповіддю
+                let val = args.first().cloned().unwrap_or(Value::Null);
+                let json_str = serde_json::to_string(&VM::value_to_json(&val))
+                    .unwrap_or_else(|_| "null".to_string());
+                let status = if args.len() > 1 {
+                    if let Some(Value::Integer(s)) = args.get(1) { *s } else { 200 }
+                } else { 200 };
+                Ok(Value::Dict(vec![
+                    (Value::String("тіло".to_string()), Value::String(json_str)),
+                    (Value::String("тип".to_string()), Value::String("application/json; charset=utf-8".to_string())),
+                    (Value::String("статус".to_string()), Value::Integer(status)),
+                ]))
+            }
+
+            "веб_перенаправити" => {
+                // веб_перенаправити(url)
+                let url = match args.first() {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => "/".to_string(),
+                };
+                Ok(Value::Dict(vec![
+                    (Value::String("тіло".to_string()), Value::String(String::new())),
+                    (Value::String("статус".to_string()), Value::Integer(302)),
+                    (Value::String("Location".to_string()), Value::String(url)),
+                ]))
+            }
+
+            "веб_помилка" => {
+                // веб_помилка(код, повідомлення)
+                let status = match args.first() {
+                    Some(Value::Integer(n)) => *n,
+                    _ => 500,
+                };
+                let msg = args.get(1).map(|v| v.to_display_string()).unwrap_or_else(|| "Помилка".to_string());
+                let html = format!(
+                    "<html><head><meta charset='utf-8'><title>Помилка {}</title></head>\
+                     <body style='font-family:sans-serif;text-align:center;padding:50px'>\
+                     <h1>{}</h1><p>{}</p><hr><p>Тризуб Web</p></body></html>",
+                    status, status, msg
+                );
+                Ok(Value::Dict(vec![
+                    (Value::String("тіло".to_string()), Value::String(html)),
+                    (Value::String("тип".to_string()), Value::String("text/html; charset=utf-8".to_string())),
+                    (Value::String("статус".to_string()), Value::Integer(status)),
+                ]))
             }
 
             "словник" => {
