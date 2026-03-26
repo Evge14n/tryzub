@@ -12,3 +12,4 @@ tryzub-parser = { path = "../parser" }
 anyhow = "1.0"
 thiserror = "1.0"
 serde_json = "1.0"
+rusqlite = { version = "0.31", features = ["bundled"] }
