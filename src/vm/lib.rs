@@ -54,6 +54,18 @@ pub enum Value {
     Dict(Vec<(Value, Value)>),
     /// Множина (Set)
     Set(Vec<Value>),
+    /// Генератор (ліниві послідовності)
+    Generator {
+        params: Vec<Parameter>,
+        body: Vec<Statement>,
+        closure: Environment,
+        /// Зібрані через віддати значення
+        yielded_values: Vec<Value>,
+        /// Поточний індекс для наступний()
+        current_index: usize,
+        /// Чи генератор вже виконувався
+        executed: bool,
+    },
     /// Діапазон
     Range {
         from: i64,
@@ -140,6 +152,7 @@ impl Value {
             Value::Lambda { .. } => "<лямбда>".to_string(),
             Value::BuiltinFn(name) => format!("<вбудована {}>", name),
             Value::CurriedBuiltin { name, .. } => format!("<каррінг {}>", name),
+            Value::Generator { .. } => "<генератор>".to_string(),
         }
     }
 
@@ -225,6 +238,8 @@ pub struct VM {
     effect_handlers: Vec<(String, Environment)>,
     /// Зареєстровані ефекти: ім'я_ефекту → операції
     registered_effects: HashMap<String, Vec<String>>,
+    /// Yielded values від генераторів
+    yielded_values: Vec<Value>,
     /// Шляхи для пошуку stdlib модулів
     stdlib_paths: Vec<String>,
     /// Вже завантажені модулі
@@ -273,6 +288,7 @@ impl VM {
             enum_types: HashMap::new(),
             trait_methods: HashMap::new(),
             contracts: HashMap::new(),
+            yielded_values: Vec::new(),
             effect_handlers: Vec::new(),
             registered_effects: HashMap::new(),
             stdlib_paths: vec![
@@ -376,9 +392,13 @@ impl VM {
                     }
                 }
             }
-            Declaration::Struct { name, .. } => {
-                // Структури реєструються через конструктори
-                self.current_env.borrow_mut().set(name, Value::Null);
+            Declaration::Struct { name, fields, .. } => {
+                // Зберігаємо інформацію про структуру для конструктора
+                let field_names: Vec<String> = fields.iter().map(|f| f.name.clone()).collect();
+                self.current_env.borrow_mut().set(
+                    format!("__struct_fields_{}", name),
+                    Value::Array(field_names.into_iter().map(Value::String).collect())
+                );
             }
             Declaration::Effect { name, operations, .. } => {
                 // Реєструємо ефект та його операції
@@ -556,11 +576,14 @@ impl VM {
                 }
             }
             Statement::Unsafe(stmts) => {
-                // Unsafe блок — в VM просто виконуємо
                 for stmt in stmts {
                     self.execute_statement(stmt)?;
                     if self.return_value.is_some() { break; }
                 }
+            }
+            Statement::Yield(expr) => {
+                let val = self.evaluate_expression(expr)?;
+                self.yielded_values.push(val);
             }
         }
         Ok(())
@@ -776,9 +799,25 @@ impl VM {
                 self.current_env.borrow().get(&full_name)
                     .ok_or_else(|| anyhow::anyhow!("Невідомий шлях: {}", full_name))
             }
-            Expression::Cast { expr, .. } => {
-                // Поки що просто повертаємо значення
-                self.evaluate_expression(*expr)
+            Expression::Cast { expr, ty } => {
+                let val = self.evaluate_expression(*expr)?;
+                // Реальна конвертація типів
+                match (&val, &ty) {
+                    (Value::Integer(n), Type::Дрб64) => Ok(Value::Float(*n as f64)),
+                    (Value::Integer(n), Type::Дрб32) => Ok(Value::Float(*n as f64)),
+                    (Value::Integer(n), Type::Тхт) => Ok(Value::String(n.to_string())),
+                    (Value::Integer(n), Type::Лог) => Ok(Value::Bool(*n != 0)),
+                    (Value::Integer(n), Type::Сим) => Ok(Value::Char(char::from_u32(*n as u32).unwrap_or('?'))),
+                    (Value::Float(f), Type::Цл64) => Ok(Value::Integer(*f as i64)),
+                    (Value::Float(f), Type::Цл32) => Ok(Value::Integer(*f as i64)),
+                    (Value::Float(f), Type::Тхт) => Ok(Value::String(f.to_string())),
+                    (Value::Bool(b), Type::Цл64) => Ok(Value::Integer(if *b { 1 } else { 0 })),
+                    (Value::Bool(b), Type::Тхт) => Ok(Value::String(if *b { "істина" } else { "хиба" }.to_string())),
+                    (Value::String(s), Type::Цл64) => Ok(Value::Integer(s.parse::<i64>().unwrap_or(0))),
+                    (Value::String(s), Type::Дрб64) => Ok(Value::Float(s.parse::<f64>().unwrap_or(0.0))),
+                    (Value::Char(c), Type::Цл64) => Ok(Value::Integer(*c as i64)),
+                    _ => Ok(val), // Якщо конвертація невідома — повертаємо як є
+                }
             }
             Expression::Await(expr) => {
                 // В VM async/await поки що синхронні
@@ -1126,6 +1165,52 @@ impl VM {
                     }
                     return Err(anyhow::anyhow!("множина.різниця потребує множину"));
                 }
+                _ => {}
+            }
+        }
+
+        // ── Методи цілих чисел ──
+        if let Value::Integer(n) = &obj {
+            match method {
+                "парне" => return Ok(Value::Bool(n % 2 == 0)),
+                "непарне" => return Ok(Value::Bool(n % 2 != 0)),
+                "абс" => return Ok(Value::Integer(n.abs())),
+                "в_текст" => return Ok(Value::String(n.to_string())),
+                "в_дробове" => return Ok(Value::Float(*n as f64)),
+                "степінь" => {
+                    if let Some(Value::Integer(exp)) = args.first() {
+                        return Ok(Value::Integer(n.pow(*exp as u32)));
+                    }
+                    return Err(anyhow::anyhow!(".степінь() потребує ціле число"));
+                }
+                "мін" => {
+                    if let Some(Value::Integer(other)) = args.first() {
+                        return Ok(Value::Integer(*n.min(other)));
+                    }
+                    return Err(anyhow::anyhow!(".мін() потребує число"));
+                }
+                "макс" => {
+                    if let Some(Value::Integer(other)) = args.first() {
+                        return Ok(Value::Integer(*n.max(other)));
+                    }
+                    return Err(anyhow::anyhow!(".макс() потребує число"));
+                }
+                _ => {}
+            }
+        }
+
+        // ── Методи дробових чисел ──
+        if let Value::Float(f) = &obj {
+            match method {
+                "абс" => return Ok(Value::Float(f.abs())),
+                "округлити" => return Ok(Value::Integer(f.round() as i64)),
+                "підлога" => return Ok(Value::Integer(f.floor() as i64)),
+                "стеля" => return Ok(Value::Integer(f.ceil() as i64)),
+                "в_текст" => return Ok(Value::String(f.to_string())),
+                "в_ціле" => return Ok(Value::Integer(*f as i64)),
+                "нескінченний" => return Ok(Value::Bool(f.is_infinite())),
+                "число" => return Ok(Value::Bool(f.is_finite() && !f.is_nan())),
+                "корінь" => return Ok(Value::Float(f.sqrt())),
                 _ => {}
             }
         }

@@ -275,6 +275,8 @@ pub enum Statement {
     CompTime(Vec<Statement>),
     /// Unsafe блок: небезпечний { ... }
     Unsafe(Vec<Statement>),
+    /// Yield: віддати вираз
+    Yield(Expression),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1148,6 +1150,9 @@ impl Parser {
             }
             self.consume(&TokenKind::ПраваФігурна, "Очікувалась '}'")?;
             Ok(Statement::Unsafe(stmts))
+        } else if self.match_token(&TokenKind::Віддати) {
+            let expr = self.expression()?;
+            Ok(Statement::Yield(expr))
         } else if self.check_declaration() {
             Ok(Statement::Declaration(self.declaration()?))
         } else {

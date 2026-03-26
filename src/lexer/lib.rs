@@ -132,6 +132,10 @@ pub enum TokenKind {
     Кнопка,        // button
     ГарячіКлавіші, // hotkeys
 
+    // ── Ключові слова: генератори ──
+    Віддати,       // yield
+    Взяти,         // take(n) for lazy sequences
+
     // ── Ключові слова: відлагодження ──
     Відлагодити,   // debug block
     Зупинка,       // breakpoint
@@ -902,6 +906,10 @@ impl Lexer {
             "зупинка" => TokenKind::Зупинка,
             "назад" => TokenKind::Назад,
             "розгалужити" => TokenKind::Розгалужити,
+
+            // Генератори
+            "віддати" => TokenKind::Віддати,
+            "взяти" => TokenKind::Взяти,
 
             // Тестування
             "тест" => TokenKind::Тест,
