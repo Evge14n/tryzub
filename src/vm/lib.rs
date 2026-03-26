@@ -1469,9 +1469,39 @@ impl VM {
         }
         println!("   Натисніть Ctrl+C для зупинки\n");
 
+        // Rate limiting: IP → (кількість_запитів, час_першого)
+        let mut rate_limits: HashMap<String, (u32, std::time::Instant)> = HashMap::new();
+        let rate_limit_max: u32 = 200; // запитів
+        let rate_limit_window = std::time::Duration::from_secs(60);
+
         for stream in listener.incoming() {
             match stream {
                 Ok(mut stream) => {
+                    let request_start = std::time::Instant::now();
+                    let client_ip = stream.peer_addr().map(|a| a.ip().to_string()).unwrap_or_default();
+
+                    // Rate limiting
+                    let entry = rate_limits.entry(client_ip.clone()).or_insert((0, std::time::Instant::now()));
+                    if entry.1.elapsed() > rate_limit_window {
+                        *entry = (1, std::time::Instant::now());
+                    } else {
+                        entry.0 += 1;
+                        if entry.0 > rate_limit_max {
+                            let response = "HTTP/1.1 429 Too Many Requests\r\n\
+                                Content-Type: text/html; charset=utf-8\r\n\
+                                Retry-After: 60\r\n\
+                                Connection: close\r\n\r\n\
+                                <html><body><h1>429</h1><p>Забагато запитів</p></body></html>";
+                            let _ = stream.write_all(response.as_bytes());
+                            continue;
+                        }
+                    }
+
+                    // Очищуємо старі записи rate limit кожні 100 запитів
+                    if rate_limits.len() > 1000 {
+                        rate_limits.retain(|_, (_, t)| t.elapsed() < rate_limit_window);
+                    }
+
                     let mut reader = BufReader::new(stream.try_clone().map_err(|e| anyhow::anyhow!("TCP clone: {}", e))?);
 
                     // Читаємо першу лінію: GET /path HTTP/1.1
@@ -1667,6 +1697,20 @@ impl VM {
                         _ => "OK",
                     };
 
+                    // CORS — обробка OPTIONS preflight
+                    if method == "OPTIONS" {
+                        let cors_response = "HTTP/1.1 204 No Content\r\n\
+                            Access-Control-Allow-Origin: *\r\n\
+                            Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n\
+                            Access-Control-Allow-Headers: Content-Type, Authorization\r\n\
+                            Access-Control-Max-Age: 86400\r\n\
+                            Connection: close\r\n\r\n";
+                        let _ = stream.write_all(cors_response.as_bytes());
+                        let elapsed = request_start.elapsed();
+                        println!("  OPTIONS {} → 204 ({:.1}мс)", path, elapsed.as_secs_f64() * 1000.0);
+                        continue;
+                    }
+
                     let mut response = format!(
                         "HTTP/1.1 {} {}\r\n\
                          Content-Type: {}\r\n\
@@ -1674,6 +1718,8 @@ impl VM {
                          X-Content-Type-Options: nosniff\r\n\
                          X-Frame-Options: DENY\r\n\
                          X-XSS-Protection: 1; mode=block\r\n\
+                         Referrer-Policy: strict-origin-when-cross-origin\r\n\
+                         Access-Control-Allow-Origin: *\r\n\
                          Connection: close\r\n",
                         response_status, status_text,
                         response_type,
@@ -1684,13 +1730,20 @@ impl VM {
                         response.push_str(&format!("Location: {}\r\n", loc));
                     }
 
+                    // Cache-Control для статичних файлів
+                    if path.contains('.') && response_status == 200 {
+                        response.push_str("Cache-Control: public, max-age=86400\r\n");
+                    }
+
                     response.push_str("\r\n");
                     response.push_str(&response_body);
 
                     let _ = stream.write_all(response.as_bytes());
                     let _ = stream.flush();
 
-                    println!("  {} {} → {}", method, path, response_status);
+                    let elapsed = request_start.elapsed();
+                    println!("  {} {} → {} ({:.1}мс)", method, path, response_status,
+                        elapsed.as_secs_f64() * 1000.0);
                 }
                 Err(e) => eprintln!("  Помилка з'єднання: {}", e),
             }
