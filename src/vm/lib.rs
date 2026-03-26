@@ -272,6 +272,13 @@ impl VM {
             scope.set("словник".to_string(), Value::BuiltinFn("словник".to_string()));
             scope.set("множина".to_string(), Value::BuiltinFn("множина".to_string()));
             scope.set("виконати_ефект".to_string(), Value::BuiltinFn("виконати_ефект".to_string()));
+
+            // Файловий I/O
+            scope.set("файл_прочитати".to_string(), Value::BuiltinFn("файл_прочитати".to_string()));
+            scope.set("файл_записати".to_string(), Value::BuiltinFn("файл_записати".to_string()));
+            scope.set("файл_існує".to_string(), Value::BuiltinFn("файл_існує".to_string()));
+            scope.set("файл_рядки".to_string(), Value::BuiltinFn("файл_рядки".to_string()));
+            scope.set("файл_додати".to_string(), Value::BuiltinFn("файл_додати".to_string()));
             scope.set("мін".to_string(), Value::BuiltinFn("мін".to_string()));
             scope.set("макс".to_string(), Value::BuiltinFn("макс".to_string()));
             scope.set("абс".to_string(), Value::BuiltinFn("абс".to_string()));
@@ -523,8 +530,11 @@ impl VM {
                     }
                     Value::Set(items) => items,
                     Value::String(s) => {
-                        // Ітерація по рядку — кожен елемент це символ
                         s.chars().map(Value::Char).collect()
+                    }
+                    Value::Generator { body, closure, .. } => {
+                        // Виконуємо генератор та ітеруємо по yielded значеннях
+                        self.execute_generator(body, closure)?
                     }
                     _ => return Err(anyhow::anyhow!("Неможливо ітерувати по {}", iter_val.type_name())),
                 };
@@ -1203,6 +1213,39 @@ impl VM {
             }
         }
 
+        // ── Методи генераторів ──
+        if let Value::Generator { ref body, ref closure, .. } = obj {
+            match method {
+                "в_масив" | "наступний" | "взяти" => {
+                    // Виконуємо тіло генератора, збираємо всі yielded значення
+                    let collected = self.execute_generator(body.clone(), closure.clone())?;
+                    match method {
+                        "в_масив" => return Ok(Value::Array(collected)),
+                        "взяти" => {
+                            let n = match args.first() {
+                                Some(Value::Integer(n)) => *n as usize,
+                                _ => collected.len(),
+                            };
+                            return Ok(Value::Array(collected.into_iter().take(n).collect()));
+                        }
+                        "наступний" => {
+                            return Ok(collected.first().cloned().map(|v| Value::EnumVariant {
+                                type_name: "Опція".to_string(),
+                                variant: "Деякий".to_string(),
+                                fields: vec![v],
+                            }).unwrap_or(Value::EnumVariant {
+                                type_name: "Опція".to_string(),
+                                variant: "Нічого".to_string(),
+                                fields: vec![],
+                            }));
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+
         // ── Методи цілих чисел ──
         if let Value::Integer(n) = &obj {
             match method {
@@ -1439,8 +1482,96 @@ impl VM {
                     _ => Err(anyhow::anyhow!("абс очікує число")),
                 }
             }
+            // ── Файловий I/O ──
+            "файл_прочитати" => {
+                match args.first() {
+                    Some(Value::String(path)) => {
+                        match std::fs::read_to_string(path) {
+                            Ok(content) => Ok(Value::EnumVariant {
+                                type_name: "Результат".to_string(),
+                                variant: "Успіх".to_string(),
+                                fields: vec![Value::String(content)],
+                            }),
+                            Err(e) => Ok(Value::EnumVariant {
+                                type_name: "Результат".to_string(),
+                                variant: "Помилка".to_string(),
+                                fields: vec![Value::String(e.to_string())],
+                            }),
+                        }
+                    }
+                    _ => Err(anyhow::anyhow!("файл_прочитати очікує шлях (тхт)")),
+                }
+            }
+            "файл_записати" => {
+                if args.len() == 2 {
+                    if let (Value::String(path), Value::String(content)) = (&args[0], &args[1]) {
+                        match std::fs::write(path, content) {
+                            Ok(()) => Ok(Value::EnumVariant {
+                                type_name: "Результат".to_string(),
+                                variant: "Успіх".to_string(),
+                                fields: vec![Value::Null],
+                            }),
+                            Err(e) => Ok(Value::EnumVariant {
+                                type_name: "Результат".to_string(),
+                                variant: "Помилка".to_string(),
+                                fields: vec![Value::String(e.to_string())],
+                            }),
+                        }
+                    } else { Err(anyhow::anyhow!("файл_записати очікує (шлях, зміст)")) }
+                } else { Err(anyhow::anyhow!("файл_записати очікує 2 аргументи")) }
+            }
+            "файл_існує" => {
+                match args.first() {
+                    Some(Value::String(path)) => Ok(Value::Bool(std::path::Path::new(path).exists())),
+                    _ => Err(anyhow::anyhow!("файл_існує очікує шлях")),
+                }
+            }
+            "файл_рядки" => {
+                match args.first() {
+                    Some(Value::String(path)) => {
+                        match std::fs::read_to_string(path) {
+                            Ok(content) => {
+                                let lines: Vec<Value> = content.lines().map(|l| Value::String(l.to_string())).collect();
+                                Ok(Value::EnumVariant {
+                                    type_name: "Результат".to_string(),
+                                    variant: "Успіх".to_string(),
+                                    fields: vec![Value::Array(lines)],
+                                })
+                            }
+                            Err(e) => Ok(Value::EnumVariant {
+                                type_name: "Результат".to_string(),
+                                variant: "Помилка".to_string(),
+                                fields: vec![Value::String(e.to_string())],
+                            }),
+                        }
+                    }
+                    _ => Err(anyhow::anyhow!("файл_рядки очікує шлях")),
+                }
+            }
+            "файл_додати" => {
+                if args.len() == 2 {
+                    if let (Value::String(path), Value::String(content)) = (&args[0], &args[1]) {
+                        use std::io::Write;
+                        match std::fs::OpenOptions::new().append(true).create(true).open(path) {
+                            Ok(mut file) => {
+                                let _ = file.write_all(content.as_bytes());
+                                Ok(Value::EnumVariant {
+                                    type_name: "Результат".to_string(),
+                                    variant: "Успіх".to_string(),
+                                    fields: vec![Value::Null],
+                                })
+                            }
+                            Err(e) => Ok(Value::EnumVariant {
+                                type_name: "Результат".to_string(),
+                                variant: "Помилка".to_string(),
+                                fields: vec![Value::String(e.to_string())],
+                            }),
+                        }
+                    } else { Err(anyhow::anyhow!("файл_додати очікує (шлях, зміст)")) }
+                } else { Err(anyhow::anyhow!("файл_додати очікує 2 аргументи")) }
+            }
+
             "словник" => {
-                // словник() — порожній або словник(ключ1, знач1, ключ2, знач2, ...)
                 let mut pairs = Vec::new();
                 let mut i = 0;
                 while i + 1 < args.len() {
@@ -1513,6 +1644,23 @@ impl VM {
     }
 
     // ── Завантаження модулів ──
+
+    /// Виконує тіло генератора та збирає yielded значення
+    fn execute_generator(&mut self, body: Vec<Statement>, closure: Environment) -> Result<Vec<Value>> {
+        let prev_yielded = std::mem::take(&mut self.yielded_values);
+        let prev_env = self.current_env.clone();
+        self.current_env = Rc::new(RefCell::new(Scope::new(Some(closure))));
+
+        for stmt in body {
+            self.execute_statement(stmt).ok(); // Ігноруємо помилки break/return
+            if self.return_value.is_some() { break; }
+        }
+        self.return_value = None;
+
+        self.current_env = prev_env;
+        let collected = std::mem::replace(&mut self.yielded_values, prev_yielded);
+        Ok(collected)
+    }
 
     /// Додає шлях для пошуку модулів (відносно поточного файлу)
     pub fn add_module_path(&mut self, path: String) {

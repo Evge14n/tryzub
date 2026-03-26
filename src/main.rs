@@ -1,4 +1,4 @@
-// Мова програмування Тризуб v2.0
+// Мова програмування Тризуб v3.9
 // Автор: Мартинюк Євген
 // Copyright (c) 2025 Мартинюк Євген. Всі права захищені.
 // Ліцензія: MIT
@@ -11,7 +11,7 @@ use std::fs;
 #[derive(Parser)]
 #[command(name = "tryzub")]
 #[command(author = "Мартинюк Євген <evgenmart@gmail.com>")]
-#[command(version = "3.6.0")]
+#[command(version = "3.9.0")]
 #[command(about = "Тризуб — сучасна українська мова програмування 🔱")]
 struct Cli {
     #[command(subcommand)]
@@ -74,7 +74,7 @@ fn main() {
         Commands::New { name } => create_project(name),
         Commands::Repl => run_repl(),
         Commands::Version => {
-            println!("🔱 Тризуб v3.6.0");
+            println!("🔱 Тризуб v3.9.0");
             println!("Автор: Мартинюк Євген");
             println!("Ліцензія: MIT");
             println!("https://github.com/Evge14n/tryzub");
@@ -258,7 +258,7 @@ fn run_tests(file: PathBuf) -> Result<()> {
 fn run_repl() -> Result<()> {
     use std::io::{self, Write, BufRead};
 
-    println!("🔱 Тризуб v3.6.0 — Інтерактивний режим");
+    println!("🔱 Тризуб v3.9.0 — Інтерактивний режим");
     println!("Введіть вираз або інструкцію. :вихід для виходу.");
     println!("Команди: :тип <вираз>, :допомога");
     println!();
@@ -405,7 +405,7 @@ fn create_project(name: String) -> Result<()> {
     fs::create_dir(format!("{}/src", name))?;
 
     let main_content = format!(r#"// Проект: {}
-// Створено за допомогою мови Тризуб v2.0
+// Створено за допомогою мови Тризуб v3.9
 
 функція головна() {{
     друк("Привіт з проекту {}! 🇺🇦")
