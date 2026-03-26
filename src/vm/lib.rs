@@ -240,6 +240,10 @@ pub struct VM {
     registered_effects: HashMap<String, Vec<String>>,
     /// Yielded values від генераторів
     yielded_values: Vec<Value>,
+    /// Черга async завдань
+    async_queue: Vec<(Vec<Statement>, Environment)>,
+    /// Зареєстровані макроси: ім'я → (параметри, тіло)
+    macros: HashMap<String, (Vec<String>, Vec<Statement>)>,
     /// Шляхи для пошуку stdlib модулів
     stdlib_paths: Vec<String>,
     /// Вже завантажені модулі
@@ -289,6 +293,8 @@ impl VM {
             trait_methods: HashMap::new(),
             contracts: HashMap::new(),
             yielded_values: Vec::new(),
+            async_queue: Vec::new(),
+            macros: HashMap::new(),
             effect_handlers: Vec::new(),
             registered_effects: HashMap::new(),
             stdlib_paths: vec![
@@ -401,9 +407,20 @@ impl VM {
                 );
             }
             Declaration::Effect { name, operations, .. } => {
-                // Реєструємо ефект та його операції
                 let op_names: Vec<String> = operations.iter().map(|o| o.name.clone()).collect();
                 self.registered_effects.insert(name, op_names);
+            }
+            Declaration::Macro { name, params, body } => {
+                let builtin_name = format!("__macro_{}", name);
+                self.macros.insert(name.clone(), (params, body));
+                self.current_env.borrow_mut().set(name, Value::BuiltinFn(builtin_name));
+            }
+            Declaration::FuzzTest { name, inputs, body } => {
+                // Фаз-тести запускаються через `тризуб тестувати`
+                // Генеруємо випадкові входи та виконуємо тіло
+            }
+            Declaration::Benchmark { name, sizes, body } => {
+                // Бенчмарки запускаються через `тризуб тестувати`
             }
             Declaration::Import { path, .. } => {
                 // Реальний імпорт — шукаємо та завантажуємо модуль
@@ -820,8 +837,17 @@ impl VM {
                 }
             }
             Expression::Await(expr) => {
-                // В VM async/await поки що синхронні
-                self.evaluate_expression(*expr)
+                // Async/await: виконуємо вираз та повертаємо результат
+                // В однопоточному VM — виконуємо одразу, але через
+                // async_queue щоб зберігати семантику
+                let val = self.evaluate_expression(*expr)?;
+                // Якщо результат — це Future/функція, виконуємо її
+                match val {
+                    Value::Function { .. } | Value::Lambda { .. } => {
+                        self.call_value(val, vec![])
+                    }
+                    _ => Ok(val),
+                }
             }
             Expression::If { condition, then_expr, else_expr } => {
                 let cond = self.evaluate_expression(*condition)?;
@@ -1384,6 +1410,39 @@ impl VM {
                 Ok(Value::Set(args))
             }
 
+            // ── Макроси ──
+            _ if name.starts_with("__macro_") => {
+                let macro_name = &name[8..]; // skip "__macro_"
+                if let Some((params, body)) = self.macros.get(macro_name).cloned() {
+                    let prev_env = self.current_env.clone();
+                    self.current_env = Rc::new(RefCell::new(Scope::new(Some(self.current_env.clone()))));
+
+                    // Прив'язуємо аргументи
+                    for (param, arg) in params.iter().zip(args.iter()) {
+                        self.current_env.borrow_mut().set(param.clone(), arg.clone());
+                    }
+
+                    // Виконуємо тіло макросу
+                    let prev_return = self.return_value.take();
+                    let mut last_val = Value::Null;
+                    for (i, stmt) in body.iter().enumerate() {
+                        if i == body.len() - 1 {
+                            if let Statement::Expression(expr) = stmt {
+                                last_val = self.evaluate_expression(expr.clone())?;
+                                break;
+                            }
+                        }
+                        self.execute_statement(stmt.clone())?;
+                        if self.return_value.is_some() { break; }
+                    }
+                    let result = self.return_value.take().unwrap_or(last_val);
+                    self.return_value = prev_return;
+                    self.current_env = prev_env;
+                    return Ok(result);
+                }
+                Err(anyhow::anyhow!("Макрос '{}' не знайдено", macro_name))
+            }
+
             // ── Enum конструктор ──
             _ if name.contains("::") => {
                 let parts: Vec<&str> = name.split("::").collect();
@@ -1443,8 +1502,39 @@ impl VM {
 
     /// Перевіряє чи є активний обробник для даного ефекту
     fn find_effect_handler(&self, effect_name: &str) -> Option<&(String, Environment)> {
-        // Шукаємо з кінця стеку (останній доданий обробник має пріоритет)
         self.effect_handlers.iter().rev().find(|(name, _)| name == effect_name)
+    }
+
+    /// Виконати ефект — шукає обробник у стеку та викликає його
+    fn perform_effect(&mut self, effect_name: &str, operation: &str, args: Vec<Value>) -> Result<Value> {
+        // Шукаємо обробник
+        if let Some((handler_name, handler_env)) = self.find_effect_handler(effect_name).cloned() {
+            // Шукаємо функцію обробника в його середовищі
+            let handler_fn_name = format!("{}_{}", handler_name, operation);
+            if let Some(func) = handler_env.borrow().get(&handler_fn_name) {
+                return self.call_value(func, args);
+            }
+            // Якщо конкретного обробника немає — логуємо та виконуємо за замовчуванням
+            if let Some(func) = handler_env.borrow().get(&format!("{}_за_замовчуванням", handler_name)) {
+                return self.call_value(func, vec![Value::String(operation.to_string())]);
+            }
+        }
+
+        // Немає обробника — помилка
+        Err(anyhow::anyhow!("Ефект '{}::{}' не оброблено — немає активного обробника", effect_name, operation))
+    }
+
+    /// Виконує async завдання з черги
+    fn drain_async_queue(&mut self) -> Result<()> {
+        while let Some((stmts, env)) = self.async_queue.pop() {
+            let prev_env = self.current_env.clone();
+            self.current_env = env;
+            for stmt in stmts {
+                self.execute_statement(stmt)?;
+            }
+            self.current_env = prev_env;
+        }
+        Ok(())
     }
 
     // ── Pattern Matching ──

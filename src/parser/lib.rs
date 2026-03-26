@@ -1489,6 +1489,12 @@ impl Parser {
 
     /// Первинні вирази
     fn primary(&mut self) -> Result<Expression> {
+        // Чекати (await)
+        if self.match_token(&TokenKind::Чекати) {
+            let expr = self.primary()?;
+            return Ok(Expression::Await(Box::new(expr)));
+        }
+
         // Літерали
         if let Some(lit) = self.match_literal() {
             return Ok(Expression::Literal(lit));

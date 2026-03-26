@@ -162,6 +162,77 @@ fn run_tests(file: PathBuf) -> Result<()> {
                 }
             }
         }
+
+        // Бенчмарки
+        if let tryzub_parser::Declaration::Benchmark { name, body, .. } = decl {
+            let test_program = tryzub_parser::Program {
+                declarations: ast.declarations.iter()
+                    .filter(|d| !matches!(d,
+                        tryzub_parser::Declaration::Test { .. } |
+                        tryzub_parser::Declaration::Benchmark { .. } |
+                        tryzub_parser::Declaration::FuzzTest { .. }
+                    ))
+                    .cloned()
+                    .chain(std::iter::once(tryzub_parser::Declaration::Function {
+                        name: "головна".to_string(),
+                        params: vec![], return_type: None,
+                        body: body.clone(), is_async: false,
+                        visibility: tryzub_parser::Visibility::Public,
+                        contract: None,
+                    }))
+                    .collect(),
+            };
+
+            let start = std::time::Instant::now();
+            let iterations = 100;
+            for _ in 0..iterations {
+                let _ = tryzub_vm::execute(test_program.clone(), vec![]);
+            }
+            let elapsed = start.elapsed();
+            println!("  ⏱ {} — {:.1}мс/ітерація ({} ітерацій)", name,
+                elapsed.as_secs_f64() * 1000.0 / iterations as f64, iterations);
+        }
+
+        // Фаз-тести
+        if let tryzub_parser::Declaration::FuzzTest { name, body, .. } = decl {
+            total += 1;
+            let test_program = tryzub_parser::Program {
+                declarations: ast.declarations.iter()
+                    .filter(|d| !matches!(d,
+                        tryzub_parser::Declaration::Test { .. } |
+                        tryzub_parser::Declaration::Benchmark { .. } |
+                        tryzub_parser::Declaration::FuzzTest { .. }
+                    ))
+                    .cloned()
+                    .chain(std::iter::once(tryzub_parser::Declaration::Function {
+                        name: "головна".to_string(),
+                        params: vec![], return_type: None,
+                        body: body.clone(), is_async: false,
+                        visibility: tryzub_parser::Visibility::Public,
+                        contract: None,
+                    }))
+                    .collect(),
+            };
+
+            // Запускаємо фаз-тест 50 разів з різними seed-ами
+            let mut fuzz_passed = true;
+            for i in 0..50 {
+                match tryzub_vm::execute(test_program.clone(), vec![i.to_string()]) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        fuzz_passed = false;
+                        println!("  ❌ {} (фаз ітерація {}) — {}", name, i, e);
+                        break;
+                    }
+                }
+            }
+            if fuzz_passed {
+                passed += 1;
+                println!("  ✅ {} (50 фаз-ітерацій)", name);
+            } else {
+                failed += 1;
+            }
+        }
     }
 
     println!("\n─────────────────────────────");
