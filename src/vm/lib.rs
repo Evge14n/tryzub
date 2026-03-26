@@ -476,6 +476,15 @@ impl VM {
                         let end = if inclusive { to + 1 } else { to };
                         (from..end).map(Value::Integer).collect()
                     }
+                    Value::Dict(pairs) => {
+                        // Ітерація по словнику — кожен елемент це кортеж (ключ, значення)
+                        pairs.into_iter().map(|(k, v)| Value::Tuple(vec![k, v])).collect()
+                    }
+                    Value::Set(items) => items,
+                    Value::String(s) => {
+                        // Ітерація по рядку — кожен елемент це символ
+                        s.chars().map(Value::Char).collect()
+                    }
                     _ => return Err(anyhow::anyhow!("Неможливо ітерувати по {}", iter_val.type_name())),
                 };
 
