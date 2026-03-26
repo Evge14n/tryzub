@@ -1,10 +1,6 @@
 # Тризуб 🔱 — Українська мова програмування
 
 <p align="center">
-  <img src="docs/images/tryzub-logo.png" alt="Тризуб Logo" width="200">
-</p>
-
-<p align="center">
   <strong>Сучасна, безпечна, компільована мова програмування з українським синтаксисом</strong>
 </p>
 
