@@ -45,6 +45,15 @@ pub enum Value {
     },
     /// Вбудована функція (Rust callback)
     BuiltinFn(String),
+    /// Частково застосована вбудована функція (каррінг для pipeline)
+    CurriedBuiltin {
+        name: String,
+        saved_args: Vec<Value>,
+    },
+    /// Словник (HashMap)
+    Dict(Vec<(Value, Value)>),
+    /// Множина (Set)
+    Set(Vec<Value>),
     /// Діапазон
     Range {
         from: i64,
@@ -116,10 +125,21 @@ impl Value {
                     format!("{}..{}", from, to)
                 }
             }
+            Value::Dict(pairs) => {
+                let parts: Vec<String> = pairs.iter()
+                    .map(|(k, v)| format!("{} -> {}", k.to_display_string(), v.to_display_string()))
+                    .collect();
+                format!("#{{{}}}", parts.join(", "))
+            }
+            Value::Set(items) => {
+                let parts: Vec<String> = items.iter().map(|v| v.to_display_string()).collect();
+                format!("%{{{}}}", parts.join(", "))
+            }
             Value::Null => "нуль".to_string(),
             Value::Function { name, .. } => format!("<функція {}>", name.as_deref().unwrap_or("анонімна")),
             Value::Lambda { .. } => "<лямбда>".to_string(),
             Value::BuiltinFn(name) => format!("<вбудована {}>", name),
+            Value::CurriedBuiltin { name, .. } => format!("<каррінг {}>", name),
         }
     }
 
@@ -132,6 +152,8 @@ impl Value {
             Value::Bool(_) => "лог",
             Value::Array(_) => "масив",
             Value::Tuple(_) => "кортеж",
+            Value::Dict(_) => "словник",
+            Value::Set(_) => "множина",
             Value::Struct(name, _) => name,
             Value::EnumVariant { type_name, .. } => type_name,
             Value::Null => "нуль",
@@ -228,6 +250,8 @@ impl VM {
             scope.set("обернути".to_string(), Value::BuiltinFn("обернути".to_string()));
             scope.set("додати".to_string(), Value::BuiltinFn("додати".to_string()));
             scope.set("паніка".to_string(), Value::BuiltinFn("паніка".to_string()));
+            scope.set("словник".to_string(), Value::BuiltinFn("словник".to_string()));
+            scope.set("множина".to_string(), Value::BuiltinFn("множина".to_string()));
 
             // Вбудовані конструктори Опція/Результат
             scope.set("Деякий".to_string(), Value::BuiltinFn("Деякий".to_string()));
@@ -853,6 +877,13 @@ impl VM {
                 Ok(result)
             }
             Value::BuiltinFn(name) => self.call_builtin(&name, args),
+            Value::CurriedBuiltin { name, saved_args } => {
+                // Pipeline каррінг: масив |> фільтрувати(предикат)
+                // CurriedBuiltin має збережений предикат, args[0] = масив
+                let mut all_args = args;
+                all_args.extend(saved_args);
+                self.call_builtin(&name, all_args)
+            }
             _ => Err(anyhow::anyhow!("Неможливо викликати {:?}", func.type_name())),
         }
     }
@@ -992,6 +1023,104 @@ impl VM {
             }
         }
 
+        // ── Методи словників ──
+        if let Value::Dict(ref pairs) = obj {
+            match method {
+                "довжина" => return Ok(Value::Integer(pairs.len() as i64)),
+                "ключі" => return Ok(Value::Array(pairs.iter().map(|(k, _)| k.clone()).collect())),
+                "значення" => return Ok(Value::Array(pairs.iter().map(|(_, v)| v.clone()).collect())),
+                "містить_ключ" => {
+                    if let Some(key) = args.first() {
+                        return Ok(Value::Bool(pairs.iter().any(|(k, _)| self.values_equal(k, key))));
+                    }
+                    return Ok(Value::Bool(false));
+                }
+                "отримати" => {
+                    if let Some(key) = args.first() {
+                        for (k, v) in pairs {
+                            if self.values_equal(k, key) { return Ok(v.clone()); }
+                        }
+                        return Ok(Value::Null);
+                    }
+                    return Ok(Value::Null);
+                }
+                "додати" => {
+                    if args.len() == 2 {
+                        let mut new_pairs = pairs.clone();
+                        // Видаляємо якщо ключ вже є
+                        new_pairs.retain(|(k, _)| !self.values_equal(k, &args[0]));
+                        new_pairs.push((args[0].clone(), args[1].clone()));
+                        return Ok(Value::Dict(new_pairs));
+                    }
+                    return Err(anyhow::anyhow!("словник.додати потребує ключ та значення"));
+                }
+                "видалити" => {
+                    if let Some(key) = args.first() {
+                        let new_pairs: Vec<(Value, Value)> = pairs.iter()
+                            .filter(|(k, _)| !self.values_equal(k, key))
+                            .cloned().collect();
+                        return Ok(Value::Dict(new_pairs));
+                    }
+                    return Err(anyhow::anyhow!("словник.видалити потребує ключ"));
+                }
+                _ => {}
+            }
+        }
+
+        // ── Методи множин ──
+        if let Value::Set(ref items) = obj {
+            match method {
+                "довжина" => return Ok(Value::Integer(items.len() as i64)),
+                "містить" => {
+                    if let Some(val) = args.first() {
+                        return Ok(Value::Bool(items.iter().any(|v| self.values_equal(v, val))));
+                    }
+                    return Ok(Value::Bool(false));
+                }
+                "додати" => {
+                    if let Some(val) = args.first() {
+                        let mut new_items = items.clone();
+                        if !new_items.iter().any(|v| self.values_equal(v, val)) {
+                            new_items.push(val.clone());
+                        }
+                        return Ok(Value::Set(new_items));
+                    }
+                    return Err(anyhow::anyhow!("множина.додати потребує елемент"));
+                }
+                "перетин" => {
+                    if let Some(Value::Set(other)) = args.first() {
+                        let result: Vec<Value> = items.iter()
+                            .filter(|v| other.iter().any(|o| self.values_equal(v, o)))
+                            .cloned().collect();
+                        return Ok(Value::Set(result));
+                    }
+                    return Err(anyhow::anyhow!("множина.перетин потребує множину"));
+                }
+                "об_єднання" | "об'єднання" => {
+                    if let Some(Value::Set(other)) = args.first() {
+                        let mut result = items.clone();
+                        for o in other {
+                            if !result.iter().any(|v| self.values_equal(v, o)) {
+                                result.push(o.clone());
+                            }
+                        }
+                        return Ok(Value::Set(result));
+                    }
+                    return Err(anyhow::anyhow!("множина.об'єднання потребує множину"));
+                }
+                "різниця" => {
+                    if let Some(Value::Set(other)) = args.first() {
+                        let result: Vec<Value> = items.iter()
+                            .filter(|v| !other.iter().any(|o| self.values_equal(v, o)))
+                            .cloned().collect();
+                        return Ok(Value::Set(result));
+                    }
+                    return Err(anyhow::anyhow!("множина.різниця потребує множину"));
+                }
+                _ => {}
+            }
+        }
+
         // ── Зареєстровані методи (трейти/реалізації) ──
         let type_name = match &obj {
             Value::Struct(name, _) => name.clone(),
@@ -1056,38 +1185,41 @@ impl VM {
             // ── Колекції: повна реалізація з каррінгом для pipeline ──
 
             "фільтрувати" => {
-                self.collection_op_2("фільтрувати", args, |vm, arr, func| {
+                if args.len() == 2 {
+                    let arr = match &args[0] { Value::Array(a) => a.clone(), _ => return Err(anyhow::anyhow!("фільтрувати: перший аргумент має бути масивом")) };
+                    let func = args[1].clone();
                     let mut result = Vec::new();
                     for item in arr {
-                        let cond = vm.call_value(func.clone(), vec![item.clone()])?;
+                        let cond = self.call_value(func.clone(), vec![item.clone()])?;
                         if cond.to_bool() { result.push(item); }
                     }
                     Ok(Value::Array(result))
-                })
+                } else if args.len() == 1 {
+                    Ok(self.curry_builtin("фільтрувати", args))
+                } else { Err(anyhow::anyhow!("фільтрувати очікує 1-2 аргументи")) }
             }
             "перетворити" => {
-                self.collection_op_2("перетворити", args, |vm, arr, func| {
+                if args.len() == 2 {
+                    let arr = match &args[0] { Value::Array(a) => a.clone(), _ => return Err(anyhow::anyhow!("перетворити: перший аргумент має бути масивом")) };
+                    let func = args[1].clone();
                     let mut result = Vec::new();
                     for item in arr {
-                        result.push(vm.call_value(func.clone(), vec![item])?);
+                        result.push(self.call_value(func.clone(), vec![item])?);
                     }
                     Ok(Value::Array(result))
-                })
+                } else if args.len() == 1 {
+                    Ok(self.curry_builtin("перетворити", args))
+                } else { Err(anyhow::anyhow!("перетворити очікує 1-2 аргументи")) }
             }
             "згорнути" => {
-                // згорнути(масив, початок, функція) або згорнути(початок, функція) для pipeline
                 if args.len() == 3 {
-                    let arr = match &args[0] { Value::Array(a) => a.clone(), _ => return Err(anyhow::anyhow!("Очікувався масив")) };
+                    let arr = match &args[0] { Value::Array(a) => a.clone(), _ => return Err(anyhow::anyhow!("згорнути: перший аргумент має бути масивом")) };
                     let mut acc = args[1].clone();
                     let func = args[2].clone();
                     for item in arr { acc = self.call_value(func.clone(), vec![acc, item])?; }
                     Ok(acc)
                 } else if args.len() == 2 {
-                    // Каррінг для pipeline: масив |> згорнути(0, |с,х| с+х)
-                    let init = args[0].clone();
-                    let func = args[1].clone();
-                    Ok(Value::BuiltinFn(format!("__curried_згорнути_{}_{}",
-                        init.to_display_string(), self.effect_handlers.len())))
+                    Ok(self.curry_builtin("згорнути", args))
                 } else { Err(anyhow::anyhow!("згорнути очікує 2-3 аргументи")) }
             }
             "сортувати" => {
@@ -1143,6 +1275,21 @@ impl VM {
                 } else { Err(anyhow::anyhow!("діапазон очікує 2 аргументи")) }
             }
 
+            "словник" => {
+                // словник() — порожній або словник(ключ1, знач1, ключ2, знач2, ...)
+                let mut pairs = Vec::new();
+                let mut i = 0;
+                while i + 1 < args.len() {
+                    pairs.push((args[i].clone(), args[i + 1].clone()));
+                    i += 2;
+                }
+                Ok(Value::Dict(pairs))
+            }
+            "множина" => {
+                // множина(елемент1, елемент2, ...)
+                Ok(Value::Set(args))
+            }
+
             // ── Enum конструктор ──
             _ if name.contains("::") => {
                 let parts: Vec<&str> = name.split("::").collect();
@@ -1160,34 +1307,11 @@ impl VM {
         }
     }
 
-    /// Допоміжна функція для колекційних операцій з каррінгом.
-    /// 2 арг = (масив, функція), 1 арг = каррінг для pipeline
-    fn collection_op_2<F>(&mut self, name: &str, args: Vec<Value>, op: F) -> Result<Value>
-    where F: Fn(&mut VM, Vec<Value>, Value) -> Result<Value> + 'static
-    {
-        if args.len() == 2 {
-            let arr = match &args[0] {
-                Value::Array(a) => a.clone(),
-                _ => return Err(anyhow::anyhow!("{}: перший аргумент має бути масивом", name)),
-            };
-            let func = args[1].clone();
-            op(self, arr, func)
-        } else if args.len() == 1 {
-            // Каррінг: повертаємо лямбду що чекає масив
-            let func = args[0].clone();
-            let op_name = name.to_string();
-            Ok(Value::Function {
-                name: Some(format!("__curried_{}", op_name)),
-                params: vec![Parameter {
-                    name: "__arr".to_string(),
-                    ty: tryzub_parser::Type::Тхт, // placeholder
-                    default: None,
-                }],
-                body: vec![], // Тіло не використовується — перехоплюється нижче
-                closure: self.current_env.clone(),
-            })
-        } else {
-            Err(anyhow::anyhow!("{} очікує 1-2 аргументи", name))
+    /// Каррінг: зберігає аргументи та повертає CurriedBuiltin
+    fn curry_builtin(&self, name: &str, args: Vec<Value>) -> Value {
+        Value::CurriedBuiltin {
+            name: name.to_string(),
+            saved_args: args,
         }
     }
 
@@ -1459,6 +1583,32 @@ impl VM {
             (BinaryOp::And, a, b) => Ok(Value::Bool(a.to_bool() && b.to_bool())),
             (BinaryOp::Or, a, b) => Ok(Value::Bool(a.to_bool() || b.to_bool())),
 
+            // Належність (оператор "в")
+            (BinaryOp::In, _, Value::Array(arr)) => {
+                Ok(Value::Bool(arr.iter().any(|v| self.values_equal(&lhs, v))))
+            }
+            (BinaryOp::In, _, Value::Set(items)) => {
+                Ok(Value::Bool(items.iter().any(|v| self.values_equal(&lhs, v))))
+            }
+            (BinaryOp::In, _, Value::Dict(pairs)) => {
+                Ok(Value::Bool(pairs.iter().any(|(k, _)| self.values_equal(&lhs, k))))
+            }
+            (BinaryOp::In, Value::Integer(val), Value::Range { from, to, inclusive }) => {
+                if *inclusive {
+                    Ok(Value::Bool(*val >= *from && *val <= *to))
+                } else {
+                    Ok(Value::Bool(*val >= *from && *val < *to))
+                }
+            }
+            (BinaryOp::In, Value::Char(_), Value::String(s)) => {
+                if let Value::Char(c) = &lhs {
+                    Ok(Value::Bool(s.contains(*c)))
+                } else { Ok(Value::Bool(false)) }
+            }
+            (BinaryOp::In, Value::String(sub), Value::String(s)) => {
+                Ok(Value::Bool(s.contains(sub.as_str())))
+            }
+
             // Побітові
             (BinaryOp::BitAnd, Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a & b)),
             (BinaryOp::BitOr, Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(a | b)),
@@ -1496,6 +1646,14 @@ impl VM {
             (Value::Tuple(a), Value::Tuple(b)) => {
                 a.len() == b.len() &&
                     a.iter().zip(b.iter()).all(|(x, y)| self.values_equal(x, y))
+            }
+            (Value::Dict(a), Value::Dict(b)) => {
+                a.len() == b.len() &&
+                    a.iter().all(|(k1, v1)| b.iter().any(|(k2, v2)| self.values_equal(k1, k2) && self.values_equal(v1, v2)))
+            }
+            (Value::Set(a), Value::Set(b)) => {
+                a.len() == b.len() &&
+                    a.iter().all(|x| b.iter().any(|y| self.values_equal(x, y)))
             }
             (Value::EnumVariant { variant: v1, fields: f1, .. },
              Value::EnumVariant { variant: v2, fields: f2, .. }) => {
