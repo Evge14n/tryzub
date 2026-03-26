@@ -453,6 +453,8 @@ pub enum BinaryOp {
     // Побітові
     BitAnd, BitOr, BitXor,
     Shl, Shr,
+    // Належність
+    In, // x в масив
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1939,6 +1941,7 @@ impl Parser {
         else if self.match_token(&TokenKind::МеншеАбоДорівнює) { Some(BinaryOp::Le) }
         else if self.match_token(&TokenKind::Більше) { Some(BinaryOp::Gt) }
         else if self.match_token(&TokenKind::БільшеАбоДорівнює) { Some(BinaryOp::Ge) }
+        else if self.match_token(&TokenKind::В) { Some(BinaryOp::In) }
         else { None }
     }
 

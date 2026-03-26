@@ -212,10 +212,12 @@ fn run_repl() -> Result<()> {
         }
 
         if line == ":допомога" || line == ":help" {
-            println!("  :тип <вираз>    — показати тип значення");
-            println!("  :вихід          — вийти");
-            println!("  :очистити       — очистити контекст");
-            println!("  Будь-який код   — виконати");
+            println!("  :тип <вираз>          — показати тип значення");
+            println!("  :час <код>            — виміряти час виконання");
+            println!("  :завантажити <файл>   — завантажити .тризуб файл");
+            println!("  :очистити             — очистити контекст");
+            println!("  :вихід                — вийти");
+            println!("  Будь-який код         — виконати");
             continue;
         }
 
@@ -234,6 +236,41 @@ fn run_repl() -> Result<()> {
             match run_source(&full_source) {
                 Ok(()) => {}
                 Err(e) => println!("❌ {}", e),
+            }
+            continue;
+        }
+
+        if line.starts_with(":час ") {
+            let code = &line[":час ".len()..];
+            let full_source = format!(
+                "{}\nфункція головна() {{ {} }}",
+                declarations_source, code
+            );
+            let start = std::time::Instant::now();
+            match run_source(&full_source) {
+                Ok(()) => {
+                    let elapsed = start.elapsed();
+                    println!("⏱ {:.3}мс", elapsed.as_secs_f64() * 1000.0);
+                }
+                Err(e) => println!("❌ {}", e),
+            }
+            continue;
+        }
+
+        if line.starts_with(":завантажити ") {
+            let path = line[":завантажити ".len()..].trim_matches('"');
+            match fs::read_to_string(path) {
+                Ok(source) => {
+                    declarations_source.push('\n');
+                    declarations_source.push_str(&source);
+                    // Підрахуємо кількість декларацій
+                    let funcs = source.matches("функція ").count();
+                    let structs = source.matches("структура ").count();
+                    let types = source.matches("тип ").count();
+                    println!("✓ Завантажено з {}: {} функцій, {} структур, {} типів",
+                        path, funcs, structs, types);
+                }
+                Err(e) => println!("❌ Не вдалося прочитати {}: {}", path, e),
             }
             continue;
         }
