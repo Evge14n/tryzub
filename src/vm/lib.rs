@@ -1,10 +1,11 @@
-// Віртуальна машина мови Тризуб v2.0
+// Віртуальна машина мови Тризуб v3.9
 // Автор: Мартинюк Євген
 
 use anyhow::Result;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::cell::RefCell;
+use serde_json;
 use tryzub_parser::{
     Program, Declaration, Statement, Expression, Literal, BinaryOp, UnaryOp,
     Type, Parameter, AssignmentOp, Pattern, MatchArm, FormatPart, LambdaParam,
@@ -272,6 +273,22 @@ impl VM {
             scope.set("словник".to_string(), Value::BuiltinFn("словник".to_string()));
             scope.set("множина".to_string(), Value::BuiltinFn("множина".to_string()));
             scope.set("виконати_ефект".to_string(), Value::BuiltinFn("виконати_ефект".to_string()));
+
+            // JSON
+            scope.set("json_розібрати".to_string(), Value::BuiltinFn("json_розібрати".to_string()));
+            scope.set("json_в_рядок".to_string(), Value::BuiltinFn("json_в_рядок".to_string()));
+            scope.set("json_в_рядок_красиво".to_string(), Value::BuiltinFn("json_в_рядок_красиво".to_string()));
+
+            // Математика (нативна)
+            scope.set("корінь".to_string(), Value::BuiltinFn("корінь".to_string()));
+            scope.set("синус".to_string(), Value::BuiltinFn("синус".to_string()));
+            scope.set("косинус".to_string(), Value::BuiltinFn("косинус".to_string()));
+            scope.set("степінь_ф".to_string(), Value::BuiltinFn("степінь_ф".to_string()));
+            scope.set("логарифм".to_string(), Value::BuiltinFn("логарифм".to_string()));
+            scope.set("ПІ".to_string(), Value::Float(std::f64::consts::PI));
+            scope.set("Е".to_string(), Value::Float(std::f64::consts::E));
+            scope.set("ціле_з_рядка".to_string(), Value::BuiltinFn("ціле_з_рядка".to_string()));
+            scope.set("дробове_з_рядка".to_string(), Value::BuiltinFn("дробове_з_рядка".to_string()));
 
             // Файловий I/O
             scope.set("файл_прочитати".to_string(), Value::BuiltinFn("файл_прочитати".to_string()));
@@ -1482,6 +1499,104 @@ impl VM {
                     _ => Err(anyhow::anyhow!("абс очікує число")),
                 }
             }
+            // ── JSON ──
+            "json_розібрати" => {
+                match args.first() {
+                    Some(Value::String(s)) => {
+                        match serde_json::from_str::<serde_json::Value>(s) {
+                            Ok(json) => Ok(Value::EnumVariant {
+                                type_name: "Результат".to_string(),
+                                variant: "Успіх".to_string(),
+                                fields: vec![VM::json_to_value(&json)],
+                            }),
+                            Err(e) => Ok(Value::EnumVariant {
+                                type_name: "Результат".to_string(),
+                                variant: "Помилка".to_string(),
+                                fields: vec![Value::String(e.to_string())],
+                            }),
+                        }
+                    }
+                    _ => Err(anyhow::anyhow!("json_розібрати очікує рядок")),
+                }
+            }
+            "json_в_рядок" => {
+                match args.first() {
+                    Some(val) => {
+                        let json = VM::value_to_json(val);
+                        Ok(Value::String(json.to_string()))
+                    }
+                    None => Err(anyhow::anyhow!("json_в_рядок очікує значення")),
+                }
+            }
+            "json_в_рядок_красиво" => {
+                match args.first() {
+                    Some(val) => {
+                        let json = VM::value_to_json(val);
+                        Ok(Value::String(serde_json::to_string_pretty(&json).unwrap_or_default()))
+                    }
+                    None => Err(anyhow::anyhow!("json_в_рядок_красиво очікує значення")),
+                }
+            }
+
+            // ── Математика (нативна) ──
+            "корінь" => {
+                match args.first() {
+                    Some(Value::Float(f)) => Ok(Value::Float(f.sqrt())),
+                    Some(Value::Integer(n)) => Ok(Value::Float((*n as f64).sqrt())),
+                    _ => Err(anyhow::anyhow!("корінь очікує число")),
+                }
+            }
+            "синус" => {
+                match args.first() {
+                    Some(Value::Float(f)) => Ok(Value::Float(f.sin())),
+                    Some(Value::Integer(n)) => Ok(Value::Float((*n as f64).sin())),
+                    _ => Err(anyhow::anyhow!("синус очікує число")),
+                }
+            }
+            "косинус" => {
+                match args.first() {
+                    Some(Value::Float(f)) => Ok(Value::Float(f.cos())),
+                    Some(Value::Integer(n)) => Ok(Value::Float((*n as f64).cos())),
+                    _ => Err(anyhow::anyhow!("косинус очікує число")),
+                }
+            }
+            "степінь_ф" => {
+                if args.len() == 2 {
+                    let base = match &args[0] { Value::Float(f) => *f, Value::Integer(n) => *n as f64, _ => return Err(anyhow::anyhow!("очікується число")) };
+                    let exp = match &args[1] { Value::Float(f) => *f, Value::Integer(n) => *n as f64, _ => return Err(anyhow::anyhow!("очікується число")) };
+                    Ok(Value::Float(base.powf(exp)))
+                } else { Err(anyhow::anyhow!("степінь_ф очікує 2 аргументи")) }
+            }
+            "логарифм" => {
+                match args.first() {
+                    Some(Value::Float(f)) => Ok(Value::Float(f.ln())),
+                    Some(Value::Integer(n)) => Ok(Value::Float((*n as f64).ln())),
+                    _ => Err(anyhow::anyhow!("логарифм очікує число")),
+                }
+            }
+            "ціле_з_рядка" => {
+                match args.first() {
+                    Some(Value::String(s)) => {
+                        match s.trim().parse::<i64>() {
+                            Ok(n) => Ok(Value::EnumVariant { type_name: "Результат".to_string(), variant: "Успіх".to_string(), fields: vec![Value::Integer(n)] }),
+                            Err(e) => Ok(Value::EnumVariant { type_name: "Результат".to_string(), variant: "Помилка".to_string(), fields: vec![Value::String(e.to_string())] }),
+                        }
+                    }
+                    _ => Err(anyhow::anyhow!("ціле_з_рядка очікує рядок")),
+                }
+            }
+            "дробове_з_рядка" => {
+                match args.first() {
+                    Some(Value::String(s)) => {
+                        match s.trim().parse::<f64>() {
+                            Ok(f) => Ok(Value::EnumVariant { type_name: "Результат".to_string(), variant: "Успіх".to_string(), fields: vec![Value::Float(f)] }),
+                            Err(e) => Ok(Value::EnumVariant { type_name: "Результат".to_string(), variant: "Помилка".to_string(), fields: vec![Value::String(e.to_string())] }),
+                        }
+                    }
+                    _ => Err(anyhow::anyhow!("дробове_з_рядка очікує рядок")),
+                }
+            }
+
             // ── Файловий I/O ──
             "файл_прочитати" => {
                 match args.first() {
@@ -2052,6 +2167,63 @@ impl VM {
                     f1.iter().zip(f2.iter()).all(|(a, b)| self.values_equal(a, b))
             }
             _ => false,
+        }
+    }
+
+    // ── JSON конвертація ──
+
+    fn json_to_value(json: &serde_json::Value) -> Value {
+        match json {
+            serde_json::Value::Null => Value::Null,
+            serde_json::Value::Bool(b) => Value::Bool(*b),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Value::Integer(i)
+                } else if let Some(f) = n.as_f64() {
+                    Value::Float(f)
+                } else {
+                    Value::Null
+                }
+            }
+            serde_json::Value::String(s) => Value::String(s.clone()),
+            serde_json::Value::Array(arr) => {
+                Value::Array(arr.iter().map(|v| VM::json_to_value(v)).collect())
+            }
+            serde_json::Value::Object(map) => {
+                let pairs: Vec<(Value, Value)> = map.iter()
+                    .map(|(k, v)| (Value::String(k.clone()), VM::json_to_value(v)))
+                    .collect();
+                Value::Dict(pairs)
+            }
+        }
+    }
+
+    fn value_to_json(val: &Value) -> serde_json::Value {
+        match val {
+            Value::Null => serde_json::Value::Null,
+            Value::Bool(b) => serde_json::Value::Bool(*b),
+            Value::Integer(n) => serde_json::json!(*n),
+            Value::Float(f) => serde_json::json!(*f),
+            Value::String(s) => serde_json::Value::String(s.clone()),
+            Value::Array(arr) => {
+                serde_json::Value::Array(arr.iter().map(|v| VM::value_to_json(v)).collect())
+            }
+            Value::Dict(pairs) => {
+                let mut map = serde_json::Map::new();
+                for (k, v) in pairs {
+                    let key = k.to_display_string();
+                    map.insert(key, VM::value_to_json(v));
+                }
+                serde_json::Value::Object(map)
+            }
+            Value::Struct(_, fields) => {
+                let mut map = serde_json::Map::new();
+                for (k, v) in fields {
+                    map.insert(k.clone(), VM::value_to_json(v));
+                }
+                serde_json::Value::Object(map)
+            }
+            _ => serde_json::Value::String(val.to_display_string()),
         }
     }
 }
