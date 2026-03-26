@@ -6,6 +6,7 @@ use std::rc::Rc;
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 use serde_json;
+use rusqlite;
 use tryzub_parser::{
     Program, Declaration, Statement, Expression, Literal, BinaryOp, UnaryOp,
     Type, Parameter, AssignmentOp, Pattern, MatchArm, FormatPart, LambdaParam,
@@ -255,6 +256,8 @@ pub struct VM {
     generator_id_counter: usize,
     /// Веб-маршрути (якщо запущено веб-сервер)
     web_routes: Option<Arc<Mutex<WebRoutes>>>,
+    /// SQLite з'єднання: шлях → Connection
+    db_connections: HashMap<String, Arc<Mutex<rusqlite::Connection>>>,
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -436,6 +439,7 @@ impl VM {
             generator_cache: HashMap::new(),
             generator_id_counter: 0,
             web_routes: None,
+            db_connections: HashMap::new(),
         }
     }
 
@@ -2291,6 +2295,297 @@ impl VM {
                 ]))
             }
 
+            // ── SQLite ORM ──
+
+            "бд_відкрити" => {
+                // бд_відкрити(шлях) → відкриває/створює SQLite базу
+                let path = match args.first() {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => "дані.db".to_string(),
+                };
+                match rusqlite::Connection::open(&path) {
+                    Ok(conn) => {
+                        // Оптимізації SQLite
+                        let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;");
+                        let db = Arc::new(Mutex::new(conn));
+                        self.db_connections.insert(path.clone(), db);
+                        println!("  📦 База даних: {}", path);
+                        Ok(Value::String(path))
+                    }
+                    Err(e) => Err(anyhow::anyhow!("Не вдалося відкрити БД: {}", e)),
+                }
+            }
+
+            "бд_створити_таблицю" => {
+                // бд_створити_таблицю(назва, схема_словник)
+                if args.len() >= 2 {
+                    let table = match &args[0] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(anyhow::anyhow!("бд_створити_таблицю: назва має бути рядком")),
+                    };
+                    let schema = match &args[1] {
+                        Value::Dict(pairs) => pairs.clone(),
+                        _ => return Err(anyhow::anyhow!("бд_створити_таблицю: схема має бути словником")),
+                    };
+
+                    let mut columns = Vec::new();
+                    columns.push("ід INTEGER PRIMARY KEY AUTOINCREMENT".to_string());
+
+                    for (key, val) in &schema {
+                        let col_name = key.to_display_string();
+                        let col_type = match val {
+                            Value::String(t) => match t.as_str() {
+                                "тхт" | "текст" => "TEXT",
+                                "цл64" | "ціле" => "INTEGER",
+                                "дрб64" | "дробове" => "REAL",
+                                "лог" | "логічне" => "INTEGER",
+                                "дата" => "TEXT",
+                                "json" => "TEXT",
+                                _ => "TEXT",
+                            },
+                            _ => "TEXT",
+                        };
+                        columns.push(format!("{} {}", col_name, col_type));
+                    }
+
+                    let sql = format!("CREATE TABLE IF NOT EXISTS {} ({})",
+                        table, columns.join(", "));
+
+                    if let Some(conn) = self.get_db_connection() {
+                        let db = conn.lock().unwrap();
+                        db.execute(&sql, [])
+                            .map_err(|e| anyhow::anyhow!("SQL помилка: {}", e))?;
+                        println!("  ✓ Таблиця '{}' створена", table);
+                        Ok(Value::Bool(true))
+                    } else {
+                        Err(anyhow::anyhow!("Немає відкритої бази даних. Викличте бд_відкрити() спочатку."))
+                    }
+                } else {
+                    Err(anyhow::anyhow!("бд_створити_таблицю очікує (назва, схема)"))
+                }
+            }
+
+            "бд_створити" => {
+                // бд_створити(таблиця, словник_даних) → словник з ід
+                if args.len() >= 2 {
+                    let table = match &args[0] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("бд_створити: назва таблиці має бути рядком")) };
+                    let data = match &args[1] { Value::Dict(pairs) => pairs.clone(), _ => return Err(anyhow::anyhow!("бд_створити: дані мають бути словником")) };
+
+                    let col_names: Vec<String> = data.iter().map(|(k, _)| k.to_display_string()).collect();
+                    let placeholders: Vec<String> = (0..data.len()).map(|i| format!("?{}", i + 1)).collect();
+
+                    let sql = format!("INSERT INTO {} ({}) VALUES ({})",
+                        table, col_names.join(", "), placeholders.join(", "));
+
+                    if let Some(conn) = self.get_db_connection() {
+                        let db = conn.lock().unwrap();
+                        let params: Vec<Box<dyn rusqlite::types::ToSql>> = data.iter()
+                            .map(|(_, v)| Self::value_to_sql_param(v))
+                            .collect();
+                        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+                        db.execute(&sql, param_refs.as_slice())
+                            .map_err(|e| anyhow::anyhow!("SQL помилка: {}", e))?;
+
+                        let id = db.last_insert_rowid();
+                        let mut result = data.clone();
+                        result.insert(0, (Value::String("ід".to_string()), Value::Integer(id)));
+                        Ok(Value::Dict(result))
+                    } else {
+                        Err(anyhow::anyhow!("Немає відкритої бази даних"))
+                    }
+                } else {
+                    Err(anyhow::anyhow!("бд_створити очікує (таблиця, дані)"))
+                }
+            }
+
+            "бд_знайти" => {
+                // бд_знайти(таблиця, ід) → словник або нуль
+                if args.len() >= 2 {
+                    let table = match &args[0] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("бд_знайти: назва таблиці")) };
+                    let id = match &args[1] { Value::Integer(n) => *n, _ => return Err(anyhow::anyhow!("бд_знайти: ід має бути цілим")) };
+
+                    if let Some(conn) = self.get_db_connection() {
+                        let db = conn.lock().unwrap();
+                        let sql = format!("SELECT * FROM {} WHERE ід = ?1", table);
+                        let mut stmt = db.prepare(&sql).map_err(|e| anyhow::anyhow!("SQL: {}", e))?;
+
+                        let columns: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+
+                        let result = stmt.query_row([id], |row| {
+                            let mut pairs = Vec::new();
+                            for (i, col) in columns.iter().enumerate() {
+                                let val = Self::sql_to_value(row, i);
+                                pairs.push((Value::String(col.clone()), val));
+                            }
+                            Ok(Value::Dict(pairs))
+                        });
+
+                        match result {
+                            Ok(val) => Ok(val),
+                            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(Value::Null),
+                            Err(e) => Err(anyhow::anyhow!("SQL: {}", e)),
+                        }
+                    } else {
+                        Err(anyhow::anyhow!("Немає відкритої бази даних"))
+                    }
+                } else {
+                    Err(anyhow::anyhow!("бд_знайти очікує (таблиця, ід)"))
+                }
+            }
+
+            "бд_всі" | "бд_запит" => {
+                // бд_всі(таблиця) або бд_запит(таблиця, де_словник)
+                if args.is_empty() { return Err(anyhow::anyhow!("{} очікує назву таблиці", name)); }
+                let table = match &args[0] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("назва таблиці має бути рядком")) };
+
+                let where_clause = if args.len() >= 2 {
+                    if let Value::Dict(pairs) = &args[1] {
+                        let conditions: Vec<String> = pairs.iter().enumerate()
+                            .map(|(i, (k, _))| format!("{} = ?{}", k.to_display_string(), i + 1))
+                            .collect();
+                        Some((conditions.join(" AND "), pairs.clone()))
+                    } else { None }
+                } else { None };
+
+                if let Some(conn) = self.get_db_connection() {
+                    let db = conn.lock().unwrap();
+                    let sql = if let Some((ref where_str, _)) = where_clause {
+                        format!("SELECT * FROM {} WHERE {} LIMIT 1000", table, where_str)
+                    } else {
+                        format!("SELECT * FROM {} LIMIT 1000", table)
+                    };
+
+                    let mut stmt = db.prepare(&sql).map_err(|e| anyhow::anyhow!("SQL: {}", e))?;
+                    let columns: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+
+                    let params: Vec<Box<dyn rusqlite::types::ToSql>> = if let Some((_, ref pairs)) = where_clause {
+                        pairs.iter().map(|(_, v)| Self::value_to_sql_param(v)).collect()
+                    } else {
+                        vec![]
+                    };
+                    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+                    let rows = stmt.query_map(param_refs.as_slice(), |row| {
+                        let mut pairs = Vec::new();
+                        for (i, col) in columns.iter().enumerate() {
+                            let val = Self::sql_to_value(row, i);
+                            pairs.push((Value::String(col.clone()), val));
+                        }
+                        Ok(Value::Dict(pairs))
+                    }).map_err(|e| anyhow::anyhow!("SQL: {}", e))?;
+
+                    let results: Vec<Value> = rows.filter_map(|r| r.ok()).collect();
+                    Ok(Value::Array(results))
+                } else {
+                    Err(anyhow::anyhow!("Немає відкритої бази даних"))
+                }
+            }
+
+            "бд_оновити" => {
+                // бд_оновити(таблиця, ід, дані_словник)
+                if args.len() >= 3 {
+                    let table = match &args[0] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("назва таблиці")) };
+                    let id = match &args[1] { Value::Integer(n) => *n, _ => return Err(anyhow::anyhow!("ід має бути цілим")) };
+                    let data = match &args[2] { Value::Dict(pairs) => pairs.clone(), _ => return Err(anyhow::anyhow!("дані мають бути словником")) };
+
+                    let sets: Vec<String> = data.iter().enumerate()
+                        .map(|(i, (k, _))| format!("{} = ?{}", k.to_display_string(), i + 1))
+                        .collect();
+
+                    let sql = format!("UPDATE {} SET {} WHERE ід = ?{}", table, sets.join(", "), data.len() + 1);
+
+                    if let Some(conn) = self.get_db_connection() {
+                        let db = conn.lock().unwrap();
+                        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = data.iter()
+                            .map(|(_, v)| Self::value_to_sql_param(v))
+                            .collect();
+                        params.push(Box::new(id));
+                        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+                        let affected = db.execute(&sql, param_refs.as_slice())
+                            .map_err(|e| anyhow::anyhow!("SQL: {}", e))?;
+                        Ok(Value::Integer(affected as i64))
+                    } else {
+                        Err(anyhow::anyhow!("Немає відкритої бази даних"))
+                    }
+                } else {
+                    Err(anyhow::anyhow!("бд_оновити очікує (таблиця, ід, дані)"))
+                }
+            }
+
+            "бд_видалити" => {
+                // бд_видалити(таблиця, ід)
+                if args.len() >= 2 {
+                    let table = match &args[0] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("назва таблиці")) };
+                    let id = match &args[1] { Value::Integer(n) => *n, _ => return Err(anyhow::anyhow!("ід має бути цілим")) };
+
+                    if let Some(conn) = self.get_db_connection() {
+                        let db = conn.lock().unwrap();
+                        let sql = format!("DELETE FROM {} WHERE ід = ?1", table);
+                        let affected = db.execute(&sql, [id])
+                            .map_err(|e| anyhow::anyhow!("SQL: {}", e))?;
+                        Ok(Value::Integer(affected as i64))
+                    } else {
+                        Err(anyhow::anyhow!("Немає відкритої бази даних"))
+                    }
+                } else {
+                    Err(anyhow::anyhow!("бд_видалити очікує (таблиця, ід)"))
+                }
+            }
+
+            "бд_кількість" => {
+                // бд_кількість(таблиця) → кількість записів
+                if let Some(Value::String(table)) = args.first() {
+                    if let Some(conn) = self.get_db_connection() {
+                        let db = conn.lock().unwrap();
+                        let sql = format!("SELECT COUNT(*) FROM {}", table);
+                        let count: i64 = db.query_row(&sql, [], |row| row.get(0))
+                            .map_err(|e| anyhow::anyhow!("SQL: {}", e))?;
+                        Ok(Value::Integer(count))
+                    } else {
+                        Err(anyhow::anyhow!("Немає відкритої бази даних"))
+                    }
+                } else {
+                    Err(anyhow::anyhow!("бд_кількість очікує назву таблиці"))
+                }
+            }
+
+            "бд_sql" => {
+                // бд_sql(запит, параметри...) → виконує raw SQL
+                if let Some(Value::String(sql)) = args.first() {
+                    if let Some(conn) = self.get_db_connection() {
+                        let db = conn.lock().unwrap();
+                        let params: Vec<Box<dyn rusqlite::types::ToSql>> = args[1..].iter()
+                            .map(|v| Self::value_to_sql_param(v))
+                            .collect();
+                        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+                        if sql.trim().to_uppercase().starts_with("SELECT") {
+                            let mut stmt = db.prepare(sql).map_err(|e| anyhow::anyhow!("SQL: {}", e))?;
+                            let columns: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+                            let rows = stmt.query_map(param_refs.as_slice(), |row| {
+                                let mut pairs = Vec::new();
+                                for (i, col) in columns.iter().enumerate() {
+                                    pairs.push((Value::String(col.clone()), Self::sql_to_value(row, i)));
+                                }
+                                Ok(Value::Dict(pairs))
+                            }).map_err(|e| anyhow::anyhow!("SQL: {}", e))?;
+                            let results: Vec<Value> = rows.filter_map(|r| r.ok()).collect();
+                            Ok(Value::Array(results))
+                        } else {
+                            let affected = db.execute(sql, param_refs.as_slice())
+                                .map_err(|e| anyhow::anyhow!("SQL: {}", e))?;
+                            Ok(Value::Integer(affected as i64))
+                        }
+                    } else {
+                        Err(anyhow::anyhow!("Немає відкритої бази даних"))
+                    }
+                } else {
+                    Err(anyhow::anyhow!("бд_sql очікує SQL запит"))
+                }
+            }
+
             "словник" => {
                 let mut pairs = Vec::new();
                 let mut i = 0;
@@ -2801,6 +3096,31 @@ impl VM {
                 Value::Dict(pairs)
             }
         }
+    }
+
+    // ── SQLite допоміжні методи ──
+
+    fn get_db_connection(&self) -> Option<Arc<Mutex<rusqlite::Connection>>> {
+        self.db_connections.values().next().cloned()
+    }
+
+    fn value_to_sql_param(val: &Value) -> Box<dyn rusqlite::types::ToSql> {
+        match val {
+            Value::Integer(n) => Box::new(*n),
+            Value::Float(f) => Box::new(*f),
+            Value::String(s) => Box::new(s.clone()),
+            Value::Bool(b) => Box::new(*b as i64),
+            Value::Null => Box::new(rusqlite::types::Null),
+            _ => Box::new(val.to_display_string()),
+        }
+    }
+
+    fn sql_to_value(row: &rusqlite::Row, idx: usize) -> Value {
+        // Пробуємо різні типи
+        if let Ok(v) = row.get::<_, i64>(idx) { return Value::Integer(v); }
+        if let Ok(v) = row.get::<_, f64>(idx) { return Value::Float(v); }
+        if let Ok(v) = row.get::<_, String>(idx) { return Value::String(v); }
+        Value::Null
     }
 
     fn value_to_json(val: &Value) -> serde_json::Value {
