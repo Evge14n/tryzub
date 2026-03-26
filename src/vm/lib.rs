@@ -2586,6 +2586,273 @@ impl VM {
                 }
             }
 
+            // ── Шаблонізатор ──
+
+            "веб_шаблон" => {
+                // веб_шаблон(ім'я_шаблону, дані_словник) → HTML
+                if args.len() >= 2 {
+                    let template_name = match &args[0] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(anyhow::anyhow!("веб_шаблон: ім'я має бути рядком")),
+                    };
+                    let data = args[1].clone();
+
+                    // Шукаємо шаблон у шаблони/ директорії
+                    let paths = vec![
+                        format!("шаблони/{}.тхтмл", template_name),
+                        format!("шаблони/{}.html", template_name),
+                        format!("templates/{}.html", template_name),
+                    ];
+
+                    let mut template_content = None;
+                    for path in &paths {
+                        if let Ok(content) = std::fs::read_to_string(path) {
+                            template_content = Some(content);
+                            break;
+                        }
+                    }
+
+                    let template = match template_content {
+                        Some(t) => t,
+                        None => return Err(anyhow::anyhow!("Шаблон '{}' не знайдено", template_name)),
+                    };
+
+                    let rendered = self.render_template(&template, &data)?;
+
+                    Ok(Value::Dict(vec![
+                        (Value::String("тіло".to_string()), Value::String(rendered)),
+                        (Value::String("тип".to_string()), Value::String("text/html; charset=utf-8".to_string())),
+                        (Value::String("статус".to_string()), Value::Integer(200)),
+                    ]))
+                } else {
+                    Err(anyhow::anyhow!("веб_шаблон очікує (ім'я, дані)"))
+                }
+            }
+
+            "шаблон_рядок" => {
+                // шаблон_рядок(шаблон_тхт, дані) → відрендерений рядок
+                if args.len() >= 2 {
+                    let template = match &args[0] {
+                        Value::String(s) => s.clone(),
+                        _ => return Err(anyhow::anyhow!("шаблон_рядок: шаблон має бути рядком")),
+                    };
+                    let data = args[1].clone();
+                    let rendered = self.render_template(&template, &data)?;
+                    Ok(Value::String(rendered))
+                } else {
+                    Err(anyhow::anyhow!("шаблон_рядок очікує (шаблон, дані)"))
+                }
+            }
+
+            // ── Автентифікація (JWT + bcrypt-подібне хешування) ──
+
+            "авт_хешувати" => {
+                // авт_хешувати(пароль) → хеш (SHA256 + salt)
+                match args.first() {
+                    Some(Value::String(password)) => {
+                        use std::collections::hash_map::DefaultHasher;
+                        use std::hash::{Hash, Hasher};
+                        // Генеруємо salt з часу
+                        let salt: u64 = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_nanos() as u64;
+                        let mut hasher = DefaultHasher::new();
+                        salt.hash(&mut hasher);
+                        password.hash(&mut hasher);
+                        // Кілька раундів хешування
+                        let mut hash_val = hasher.finish();
+                        for _ in 0..1000 {
+                            let mut h = DefaultHasher::new();
+                            hash_val.hash(&mut h);
+                            password.hash(&mut h);
+                            salt.hash(&mut h);
+                            hash_val = h.finish();
+                        }
+                        Ok(Value::String(format!("$тх${}${:016x}", salt, hash_val)))
+                    }
+                    _ => Err(anyhow::anyhow!("авт_хешувати очікує пароль (тхт)")),
+                }
+            }
+
+            "авт_перевірити" => {
+                // авт_перевірити(пароль, хеш) → лог
+                if args.len() >= 2 {
+                    if let (Value::String(password), Value::String(stored_hash)) = (&args[0], &args[1]) {
+                        use std::collections::hash_map::DefaultHasher;
+                        use std::hash::{Hash, Hasher};
+                        // Розбираємо збережений хеш
+                        let parts: Vec<&str> = stored_hash.split('$').collect();
+                        if parts.len() >= 4 && parts[1] == "тх" {
+                            if let Ok(salt) = parts[2].parse::<u64>() {
+                                let mut hasher = DefaultHasher::new();
+                                salt.hash(&mut hasher);
+                                password.hash(&mut hasher);
+                                let mut hash_val = hasher.finish();
+                                for _ in 0..1000 {
+                                    let mut h = DefaultHasher::new();
+                                    hash_val.hash(&mut h);
+                                    password.hash(&mut h);
+                                    salt.hash(&mut h);
+                                    hash_val = h.finish();
+                                }
+                                let computed = format!("$тх${}${:016x}", salt, hash_val);
+                                // Timing-safe порівняння
+                                let eq = stored_hash.len() == computed.len() &&
+                                    stored_hash.bytes().zip(computed.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0;
+                                return Ok(Value::Bool(eq));
+                            }
+                        }
+                        Ok(Value::Bool(false))
+                    } else {
+                        Err(anyhow::anyhow!("авт_перевірити очікує (пароль, хеш)"))
+                    }
+                } else {
+                    Err(anyhow::anyhow!("авт_перевірити очікує 2 аргументи"))
+                }
+            }
+
+            "авт_створити_токен" => {
+                // авт_створити_токен(дані_словник, секрет, термін_хвилин) → JWT-подібний токен
+                if args.len() >= 1 {
+                    let data = &args[0];
+                    let secret = args.get(1).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                        .unwrap_or_else(|| "тризуб-секрет-за-замовчуванням".to_string());
+                    let ttl_min = args.get(2).and_then(|v| if let Value::Integer(n) = v { Some(*n) } else { None })
+                        .unwrap_or(1440); // 24 години
+
+                    use std::collections::hash_map::DefaultHasher;
+                    use std::hash::{Hash, Hasher};
+
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    let exp = now + (ttl_min as u64 * 60);
+
+                    // Header
+                    let header = serde_json::json!({"алг": "ТХ256", "тип": "JWT"});
+                    let header_b64 = Self::base64_encode(&serde_json::to_string(&header).unwrap());
+
+                    // Payload
+                    let mut payload = VM::value_to_json(data);
+                    if let serde_json::Value::Object(ref mut map) = payload {
+                        map.insert("exp".to_string(), serde_json::json!(exp));
+                        map.insert("iat".to_string(), serde_json::json!(now));
+                    }
+                    let payload_b64 = Self::base64_encode(&serde_json::to_string(&payload).unwrap());
+
+                    // Signature (HMAC-like з DefaultHasher)
+                    let sign_input = format!("{}.{}.{}", header_b64, payload_b64, secret);
+                    let mut hasher = DefaultHasher::new();
+                    sign_input.hash(&mut hasher);
+                    let sig = format!("{:016x}", hasher.finish());
+                    let sig_b64 = Self::base64_encode(&sig);
+
+                    Ok(Value::String(format!("{}.{}.{}", header_b64, payload_b64, sig_b64)))
+                } else {
+                    Err(anyhow::anyhow!("авт_створити_токен очікує (дані)"))
+                }
+            }
+
+            "авт_перевірити_токен" => {
+                // авт_перевірити_токен(токен, секрет) → дані або Помилка
+                if args.len() >= 1 {
+                    if let Value::String(token) = &args[0] {
+                        let secret = args.get(1).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                            .unwrap_or_else(|| "тризуб-секрет-за-замовчуванням".to_string());
+
+                        use std::collections::hash_map::DefaultHasher;
+                        use std::hash::{Hash, Hasher};
+
+                        let parts: Vec<&str> = token.split('.').collect();
+                        if parts.len() != 3 {
+                            return Ok(Value::EnumVariant {
+                                type_name: "Результат".to_string(),
+                                variant: "Помилка".to_string(),
+                                fields: vec![Value::String("Невалідний токен".to_string())],
+                            });
+                        }
+
+                        // Перевіряємо підпис
+                        let sign_input = format!("{}.{}.{}", parts[0], parts[1], secret);
+                        let mut hasher = DefaultHasher::new();
+                        sign_input.hash(&mut hasher);
+                        let expected_sig = Self::base64_encode(&format!("{:016x}", hasher.finish()));
+
+                        if parts[2] != expected_sig {
+                            return Ok(Value::EnumVariant {
+                                type_name: "Результат".to_string(),
+                                variant: "Помилка".to_string(),
+                                fields: vec![Value::String("Невалідний підпис".to_string())],
+                            });
+                        }
+
+                        // Декодуємо payload
+                        let payload_str = Self::base64_decode(parts[1]);
+                        if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&payload_str) {
+                            // Перевіряємо термін дії
+                            if let Some(exp) = json_val.get("exp").and_then(|v| v.as_u64()) {
+                                let now = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs();
+                                if now > exp {
+                                    return Ok(Value::EnumVariant {
+                                        type_name: "Результат".to_string(),
+                                        variant: "Помилка".to_string(),
+                                        fields: vec![Value::String("Токен прострочений".to_string())],
+                                    });
+                                }
+                            }
+                            Ok(Value::EnumVariant {
+                                type_name: "Результат".to_string(),
+                                variant: "Успіх".to_string(),
+                                fields: vec![VM::json_to_value(&json_val)],
+                            })
+                        } else {
+                            Ok(Value::EnumVariant {
+                                type_name: "Результат".to_string(),
+                                variant: "Помилка".to_string(),
+                                fields: vec![Value::String("Не вдалося декодувати payload".to_string())],
+                            })
+                        }
+                    } else {
+                        Err(anyhow::anyhow!("авт_перевірити_токен очікує токен (тхт)"))
+                    }
+                } else {
+                    Err(anyhow::anyhow!("авт_перевірити_токен очікує (токен)"))
+                }
+            }
+
+            // ── Утиліти для середовища ──
+
+            "середовище" => {
+                // середовище(назва) → значення змінної середовища або нуль
+                match args.first() {
+                    Some(Value::String(name)) => {
+                        match std::env::var(name) {
+                            Ok(val) => Ok(Value::String(val)),
+                            Err(_) => Ok(Value::Null),
+                        }
+                    }
+                    _ => Err(anyhow::anyhow!("середовище очікує назву змінної")),
+                }
+            }
+
+            "випадкове" => {
+                // випадкове(мін, макс) → випадкове ціле число
+                let min = args.first().and_then(|v| if let Value::Integer(n) = v { Some(*n) } else { None }).unwrap_or(0);
+                let max = args.get(1).and_then(|v| if let Value::Integer(n) = v { Some(*n) } else { None }).unwrap_or(100);
+                let seed = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as i64;
+                let range = max - min + 1;
+                if range <= 0 { return Ok(Value::Integer(min)); }
+                Ok(Value::Integer(min + (seed.abs() % range)))
+            }
+
             "словник" => {
                 let mut pairs = Vec::new();
                 let mut i = 0;
@@ -3096,6 +3363,276 @@ impl VM {
                 Value::Dict(pairs)
             }
         }
+    }
+
+    // ── Шаблонізатор ──
+
+    fn render_template(&mut self, template: &str, data: &Value) -> Result<String> {
+        let mut result = String::new();
+        let chars: Vec<char> = template.chars().collect();
+        let mut i = 0;
+
+        while i < chars.len() {
+            if i + 1 < chars.len() && chars[i] == '{' && chars[i + 1] != '{' {
+                // Знаходимо кінець виразу
+                let start = i + 1;
+                let mut depth = 1;
+                let mut j = start;
+                while j < chars.len() && depth > 0 {
+                    if chars[j] == '{' { depth += 1; }
+                    if chars[j] == '}' { depth -= 1; }
+                    if depth > 0 { j += 1; }
+                }
+
+                let expr: String = chars[start..j].iter().collect();
+                let expr = expr.trim();
+
+                if expr.starts_with("якщо ") {
+                    // Умовний блок: {якщо умова}...{/якщо}
+                    let condition = &expr[9..]; // "якщо " = 9 bytes in UTF-8? Let's be safe
+                    let condition = expr.trim_start_matches("якщо").trim();
+                    let end_tag = "{/якщо}";
+                    let else_tag = "{інакше}";
+
+                    // Знаходимо {/якщо}
+                    let remaining: String = chars[j+1..].iter().collect();
+                    let (if_body, else_body, skip_len) = if let Some(else_pos) = remaining.find(else_tag) {
+                        if let Some(end_pos) = remaining.find(end_tag) {
+                            if else_pos < end_pos {
+                                let if_b = &remaining[..else_pos];
+                                let else_b = &remaining[else_pos + else_tag.len()..end_pos];
+                                (if_b.to_string(), Some(else_b.to_string()), end_pos + end_tag.len())
+                            } else {
+                                let if_b = &remaining[..end_pos];
+                                (if_b.to_string(), None, end_pos + end_tag.len())
+                            }
+                        } else {
+                            (remaining.clone(), None, remaining.len())
+                        }
+                    } else if let Some(end_pos) = remaining.find(end_tag) {
+                        let if_b = &remaining[..end_pos];
+                        (if_b.to_string(), None, end_pos + end_tag.len())
+                    } else {
+                        (remaining.clone(), None, remaining.len())
+                    };
+
+                    // Обчислюємо умову
+                    let cond_val = self.resolve_template_value(condition, data);
+                    if cond_val.to_bool() {
+                        result.push_str(&self.render_template(&if_body, data)?);
+                    } else if let Some(else_b) = else_body {
+                        result.push_str(&self.render_template(&else_b, data)?);
+                    }
+
+                    // Переміщуємо позицію
+                    i = j + 1 + skip_len;
+                    continue;
+                } else if expr.starts_with("для ") {
+                    // Цикл: {для елемент в масив}...{/для}
+                    let for_expr = expr.trim_start_matches("для").trim();
+                    let parts: Vec<&str> = for_expr.splitn(3, ' ').collect();
+
+                    if parts.len() >= 3 && parts[1] == "в" {
+                        let var_name = parts[0];
+                        let collection_name = parts[2];
+
+                        let end_tag = "{/для}";
+                        let remaining: String = chars[j+1..].iter().collect();
+                        let (body, skip_len) = if let Some(end_pos) = remaining.find(end_tag) {
+                            (&remaining[..end_pos], end_pos + end_tag.len())
+                        } else {
+                            (remaining.as_str(), remaining.len())
+                        };
+
+                        let collection = self.resolve_template_value(collection_name, data);
+                        if let Value::Array(items) = collection {
+                            for (idx, item) in items.iter().enumerate() {
+                                // Створюємо контекст з елементом
+                                let mut item_data_pairs = match data {
+                                    Value::Dict(pairs) => pairs.clone(),
+                                    _ => vec![],
+                                };
+                                item_data_pairs.push((Value::String(var_name.to_string()), item.clone()));
+                                item_data_pairs.push((Value::String("індекс".to_string()), Value::Integer(idx as i64)));
+                                item_data_pairs.push((Value::String("лічильник".to_string()), Value::Integer(idx as i64 + 1)));
+                                item_data_pairs.push((Value::String("перший".to_string()), Value::Bool(idx == 0)));
+                                item_data_pairs.push((Value::String("останній".to_string()), Value::Bool(idx == items.len() - 1)));
+
+                                let item_data = Value::Dict(item_data_pairs);
+                                result.push_str(&self.render_template(body, &item_data)?);
+                            }
+                        }
+
+                        i = j + 1 + skip_len;
+                        continue;
+                    }
+                } else if expr.starts_with("включити ") {
+                    // Включення: {включити "компонент"}
+                    let include_name = expr.trim_start_matches("включити").trim().trim_matches('"');
+                    let paths = vec![
+                        format!("шаблони/{}.тхтмл", include_name),
+                        format!("шаблони/компоненти/{}.тхтмл", include_name),
+                        format!("шаблони/{}.html", include_name),
+                    ];
+                    for path in &paths {
+                        if let Ok(content) = std::fs::read_to_string(path) {
+                            result.push_str(&self.render_template(&content, data)?);
+                            break;
+                        }
+                    }
+                    i = j + 1;
+                    continue;
+                } else if expr == "csrf" {
+                    // CSRF токен
+                    use std::collections::hash_map::DefaultHasher;
+                    use std::hash::{Hash, Hasher};
+                    let mut h = DefaultHasher::new();
+                    std::time::SystemTime::now().hash(&mut h);
+                    let token = format!("{:016x}", h.finish());
+                    result.push_str(&format!(
+                        "<input type=\"hidden\" name=\"csrf_token\" value=\"{}\">", token
+                    ));
+                    i = j + 1;
+                    continue;
+                } else {
+                    // Змінна: {назва} або {назва |> фільтр}
+                    let (var_path, filter) = if let Some(pipe_pos) = expr.find("|>") {
+                        (expr[..pipe_pos].trim(), Some(expr[pipe_pos+2..].trim()))
+                    } else {
+                        (expr, None)
+                    };
+
+                    let val = self.resolve_template_value(var_path, data);
+                    let mut text = val.to_display_string();
+
+                    // Фільтри
+                    if let Some(f) = filter {
+                        text = match f {
+                            "великими" => text.to_uppercase(),
+                            "малими" => text.to_lowercase(),
+                            _ if f.starts_with("обрізати_до(") => {
+                                let len_str = f.trim_start_matches("обрізати_до(").trim_end_matches(')');
+                                let max_len: usize = len_str.parse().unwrap_or(100);
+                                if text.chars().count() > max_len {
+                                    let truncated: String = text.chars().take(max_len).collect();
+                                    format!("{}...", truncated)
+                                } else { text }
+                            }
+                            "гроші" => {
+                                if let Ok(num) = text.parse::<f64>() {
+                                    let whole = num as i64;
+                                    let frac = ((num - whole as f64) * 100.0).round() as i64;
+                                    let formatted = Self::format_number(whole);
+                                    format!("{},{:02}", formatted, frac)
+                                } else { text }
+                            }
+                            "довжина" => {
+                                match &val {
+                                    Value::Array(a) => a.len().to_string(),
+                                    Value::String(s) => s.chars().count().to_string(),
+                                    _ => text,
+                                }
+                            }
+                            _ => text,
+                        };
+                    }
+
+                    // HTML екранування (захист від XSS)
+                    if !expr.starts_with('!') {
+                        text = text.replace('&', "&amp;")
+                            .replace('<', "&lt;")
+                            .replace('>', "&gt;")
+                            .replace('"', "&quot;")
+                            .replace('\'', "&#39;");
+                    }
+
+                    result.push_str(&text);
+                }
+
+                i = j + 1;
+            } else {
+                result.push(chars[i]);
+                i += 1;
+            }
+        }
+
+        Ok(result)
+    }
+
+    fn resolve_template_value(&self, path: &str, data: &Value) -> Value {
+        let path = path.trim();
+
+        // Дотовий доступ: товар.назва
+        let parts: Vec<&str> = path.split('.').collect();
+
+        let mut current = data.clone();
+        for part in &parts {
+            let part = part.trim();
+            current = match &current {
+                Value::Dict(pairs) => {
+                    pairs.iter()
+                        .find(|(k, _)| k.to_display_string() == part)
+                        .map(|(_, v)| v.clone())
+                        .unwrap_or(Value::Null)
+                }
+                Value::Struct(_, fields) => {
+                    fields.get(part).cloned().unwrap_or(Value::Null)
+                }
+                _ => Value::Null,
+            };
+        }
+        current
+    }
+
+    fn format_number(n: i64) -> String {
+        let s = n.abs().to_string();
+        let mut result = String::new();
+        for (i, c) in s.chars().rev().enumerate() {
+            if i > 0 && i % 3 == 0 { result.push(' '); }
+            result.push(c);
+        }
+        if n < 0 { result.push('-'); }
+        result.chars().rev().collect()
+    }
+
+    fn base64_encode(input: &str) -> String {
+        const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let bytes = input.as_bytes();
+        let mut result = String::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            let b0 = bytes[i] as u32;
+            let b1 = if i + 1 < bytes.len() { bytes[i + 1] as u32 } else { 0 };
+            let b2 = if i + 2 < bytes.len() { bytes[i + 2] as u32 } else { 0 };
+            let triple = (b0 << 16) | (b1 << 8) | b2;
+            result.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
+            result.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
+            if i + 1 < bytes.len() { result.push(CHARS[((triple >> 6) & 0x3F) as usize] as char); }
+            if i + 2 < bytes.len() { result.push(CHARS[(triple & 0x3F) as usize] as char); }
+            i += 3;
+        }
+        result
+    }
+
+    fn base64_decode(input: &str) -> String {
+        const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let mut bytes = Vec::new();
+        let input_bytes: Vec<u8> = input.bytes()
+            .filter_map(|b| CHARS.iter().position(|&c| c == b).map(|p| p as u8))
+            .collect();
+        let mut i = 0;
+        while i < input_bytes.len() {
+            let b0 = input_bytes[i] as u32;
+            let b1 = if i + 1 < input_bytes.len() { input_bytes[i + 1] as u32 } else { 0 };
+            let b2 = if i + 2 < input_bytes.len() { input_bytes[i + 2] as u32 } else { 0 };
+            let b3 = if i + 3 < input_bytes.len() { input_bytes[i + 3] as u32 } else { 0 };
+            let triple = (b0 << 18) | (b1 << 12) | (b2 << 6) | b3;
+            bytes.push(((triple >> 16) & 0xFF) as u8);
+            if i + 2 < input_bytes.len() { bytes.push(((triple >> 8) & 0xFF) as u8); }
+            if i + 3 < input_bytes.len() { bytes.push((triple & 0xFF) as u8); }
+            i += 4;
+        }
+        String::from_utf8_lossy(&bytes).to_string()
     }
 
     // ── SQLite допоміжні методи ──
