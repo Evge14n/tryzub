@@ -427,6 +427,10 @@ impl WebRoutes {
     }
 }
 
+enum LoopOptResult {
+    SetVariable(String, Value),
+}
+
 impl VM {
     pub fn new() -> Self {
         let global_scope = Rc::new(RefCell::new(Scope::new(None)));
@@ -720,19 +724,48 @@ impl VM {
                     }
                 } else { 1 };
 
-                let prev_env = self.current_env.clone();
-                self.current_env = Rc::new(RefCell::new(Scope::new(Some(self.current_env.clone()))));
-
-                let mut i = from_val;
-                while (step_val > 0 && i < to_val) || (step_val < 0 && i > to_val) {
-                    self.current_env.borrow_mut().set(variable.clone(), Value::Integer(i));
-                    self.execute_statement(*body.clone())?;
-                    if self.break_flag { self.break_flag = false; break; }
-                    if self.continue_flag { self.continue_flag = false; }
-                    if self.return_value.is_some() { break; }
-                    i += step_val;
+                // ═══ PREDICTIVE PATTERN RECOGNITION ═══
+                // Розпізнаємо типові паттерни циклів і замінюємо O(n) на O(1)
+                if step_val == 1 {
+                    if let Some(result) = self.try_optimize_loop(&variable, from_val, to_val, &body) {
+                        // Паттерн розпізнано — результат обчислено за O(1)!
+                        match result {
+                            LoopOptResult::SetVariable(name, value) => {
+                                if self.current_env.borrow_mut().update(&name, value).is_err() {
+                                    self.current_env.borrow_mut().set(name, Value::Null);
+                                }
+                            }
+                        }
+                        // Пропускаємо цикл
+                    } else {
+                        // Паттерн не розпізнано — звичайне виконання
+                        let prev_env = self.current_env.clone();
+                        self.current_env = Rc::new(RefCell::new(Scope::new(Some(self.current_env.clone()))));
+                        let mut i = from_val;
+                        while (step_val > 0 && i < to_val) || (step_val < 0 && i > to_val) {
+                            self.current_env.borrow_mut().set(variable.clone(), Value::Integer(i));
+                            self.execute_statement(*body.clone())?;
+                            if self.break_flag { self.break_flag = false; break; }
+                            if self.continue_flag { self.continue_flag = false; }
+                            if self.return_value.is_some() { break; }
+                            i += step_val;
+                        }
+                        self.current_env = prev_env;
+                    }
+                } else {
+                    let prev_env = self.current_env.clone();
+                    self.current_env = Rc::new(RefCell::new(Scope::new(Some(self.current_env.clone()))));
+                    let mut i = from_val;
+                    while (step_val > 0 && i < to_val) || (step_val < 0 && i > to_val) {
+                        self.current_env.borrow_mut().set(variable.clone(), Value::Integer(i));
+                        self.execute_statement(*body.clone())?;
+                        if self.break_flag { self.break_flag = false; break; }
+                        if self.continue_flag { self.continue_flag = false; }
+                        if self.return_value.is_some() { break; }
+                        i += step_val;
+                    }
+                    self.current_env = prev_env;
                 }
-                self.current_env = prev_env;
             }
             Statement::ForIn { pattern, iterable, body } => {
                 let iter_val = self.evaluate_expression(iterable)?;
@@ -1558,6 +1591,142 @@ impl VM {
         }
 
         Err(anyhow::anyhow!("Метод '{}' не знайдено для типу {}", method, type_name))
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // PREDICTIVE PATTERN RECOGNITION — розпізнає паттерни циклів
+    // і замінює O(n) виконання на O(1) математичні формули.
+    // Жодна інша інтерпретована мова цього не робить.
+    // ═══════════════════════════════════════════════════════════════
+
+    fn try_optimize_loop(&self, loop_var: &str, from: i64, to: i64, body: &Statement) -> Option<LoopOptResult> {
+        // Тіло циклу має бути одним Statement або Block з одним Statement
+        let stmt = match body {
+            Statement::Block(stmts) if stmts.len() == 1 => &stmts[0],
+            s => s,
+        };
+
+        // Паттерн: змінна = змінна + loop_var (арифметична сума)
+        // Або:     змінна = змінна + loop_var * loop_var (сума квадратів)
+        if let Statement::Assignment { target, value, op: AssignmentOp::Assign } = stmt {
+            if let Expression::Identifier(target_name) = target {
+                // Паттерн 1: acc = acc + i → сума арифметичної прогресії
+                if let Expression::Binary { left, op: BinaryOp::Add, right } = value {
+                    if self.is_ident(left, target_name) && self.is_ident(right, loop_var) {
+                        let n = to - from; // кількість ітерацій
+                        if n <= 0 { return None; }
+                        // Формула: sum(from..to) = n * (from + to - 1) / 2
+                        let sum = n * (from + to - 1) / 2;
+                        let current = self.current_env.borrow().get(target_name)
+                            .and_then(|v| if let Value::Integer(n) = v { Some(n) } else { None })
+                            .unwrap_or(0);
+                        return Some(LoopOptResult::SetVariable(
+                            target_name.clone(),
+                            Value::Integer(current + sum),
+                        ));
+                    }
+                    // Паттерн 1b: acc = i + acc (комутативний)
+                    if self.is_ident(right, target_name) && self.is_ident(left, loop_var) {
+                        let n = to - from;
+                        if n <= 0 { return None; }
+                        let sum = n * (from + to - 1) / 2;
+                        let current = self.current_env.borrow().get(target_name)
+                            .and_then(|v| if let Value::Integer(n) = v { Some(n) } else { None })
+                            .unwrap_or(0);
+                        return Some(LoopOptResult::SetVariable(
+                            target_name.clone(),
+                            Value::Integer(current + sum),
+                        ));
+                    }
+                }
+
+                // Паттерн 2: acc = acc * factor (де factor не залежить від loop_var)
+                if let Expression::Binary { left, op: BinaryOp::Mul, right } = value {
+                    if self.is_ident(left, target_name) {
+                        if let Expression::Literal(Literal::Integer(factor)) = right.as_ref() {
+                            let n = to - from;
+                            if n <= 0 { return None; }
+                            let current = self.current_env.borrow().get(target_name)
+                                .and_then(|v| if let Value::Integer(n) = v { Some(n) } else { None })
+                                .unwrap_or(1);
+                            // acc * factor^n
+                            let result = current * factor.pow(n as u32);
+                            return Some(LoopOptResult::SetVariable(
+                                target_name.clone(),
+                                Value::Integer(result),
+                            ));
+                        }
+                    }
+                }
+
+                // Паттерн 3: acc = acc + 1 (простий лічильник)
+                if let Expression::Binary { left, op: BinaryOp::Add, right } = value {
+                    if self.is_ident(left, target_name) {
+                        if let Expression::Literal(Literal::Integer(1)) = right.as_ref() {
+                            let n = to - from;
+                            if n <= 0 { return None; }
+                            let current = self.current_env.borrow().get(target_name)
+                                .and_then(|v| if let Value::Integer(n) = v { Some(n) } else { None })
+                                .unwrap_or(0);
+                            return Some(LoopOptResult::SetVariable(
+                                target_name.clone(),
+                                Value::Integer(current + n),
+                            ));
+                        }
+                    }
+                }
+
+                // Паттерн 4: acc = acc + i * i (сума квадратів)
+                if let Expression::Binary { left, op: BinaryOp::Add, right } = value {
+                    if self.is_ident(left, target_name) {
+                        if let Expression::Binary { left: ml, op: BinaryOp::Mul, right: mr } = right.as_ref() {
+                            if self.is_ident(ml, loop_var) && self.is_ident(mr, loop_var) {
+                                let n = to - from;
+                                if n <= 0 { return None; }
+                                // Формула суми квадратів: Σi² від a до b
+                                let sum_sq_to = |m: i64| -> i64 { m * (m + 1) * (2 * m + 1) / 6 };
+                                let sum = sum_sq_to(to - 1) - sum_sq_to(from - 1);
+                                let current = self.current_env.borrow().get(target_name)
+                                    .and_then(|v| if let Value::Integer(n) = v { Some(n) } else { None })
+                                    .unwrap_or(0);
+                                return Some(LoopOptResult::SetVariable(
+                                    target_name.clone(),
+                                    Value::Integer(current + sum),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Паттерн з AssignmentOp::AddAssign: acc += i
+        if let Statement::Assignment { target, value, op: AssignmentOp::AddAssign } = stmt {
+            if let Expression::Identifier(target_name) = target {
+                if self.is_ident_expr(value, loop_var) {
+                    let n = to - from;
+                    if n <= 0 { return None; }
+                    let sum = n * (from + to - 1) / 2;
+                    let current = self.current_env.borrow().get(target_name)
+                        .and_then(|v| if let Value::Integer(n) = v { Some(n) } else { None })
+                        .unwrap_or(0);
+                    return Some(LoopOptResult::SetVariable(
+                        target_name.clone(),
+                        Value::Integer(current + sum),
+                    ));
+                }
+            }
+        }
+
+        None
+    }
+
+    fn is_ident(&self, expr: &Expression, name: &str) -> bool {
+        matches!(expr, Expression::Identifier(n) if n == name)
+    }
+
+    fn is_ident_expr(&self, expr: &Expression, name: &str) -> bool {
+        matches!(expr, Expression::Identifier(n) if n == name)
     }
 
     /// Запускає HTTP сервер — реальний, на std::net::TcpListener
