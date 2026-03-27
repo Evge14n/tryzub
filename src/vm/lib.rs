@@ -1,7 +1,7 @@
 pub mod bytecode;
 pub mod compiler;
 
-// Тризуб VM v4.3 — Оптимізований інтерпретатор + Bytecode
+// Тризуб VM v4.5
 
 use anyhow::Result;
 use std::collections::HashMap;
@@ -1936,9 +1936,11 @@ impl VM {
                                 }
                             }
                         } else if let Some(ref static_dir) = routes.static_dir {
-                            // Спроба роздати статичний файл
                             let file_path = format!("{}{}", static_dir, path);
-                            if let Ok(content) = std::fs::read(&file_path) {
+                            if path.contains("..") || path.contains('\0') {
+                                let html = "<html><body><h1>403 Forbidden</h1></body></html>";
+                                (html.to_string(), "text/html; charset=utf-8".to_string(), 403, None::<String>)
+                            } else if let Ok(content) = std::fs::read(&file_path) {
                                 let mime = Self::guess_mime(&file_path);
                                 let body = if mime.starts_with("text/") || mime.contains("json") || mime.contains("javascript") || mime.contains("xml") || mime.contains("svg") {
                                     String::from_utf8_lossy(&content).to_string()
@@ -2887,7 +2889,11 @@ impl VM {
                 let where_clause = if args.len() >= 2 {
                     if let Value::Dict(pairs) = &args[1] {
                         let conditions: Vec<String> = pairs.iter().enumerate()
-                            .map(|(i, (k, _))| format!("{} = ?{}", k.to_display_string(), i + 1))
+                            .map(|(i, (k, _))| {
+                                let col = k.to_display_string();
+                                Self::validate_sql_identifier(&col).ok();
+                                format!("{} = ?{}", col, i + 1)
+                            })
                             .collect();
                         Some((conditions.join(" AND "), pairs.clone()))
                     } else { None }
@@ -4027,12 +4033,9 @@ impl VM {
                     i = j + 1;
                     continue;
                 } else if expr == "csrf" {
-                    // CSRF токен
-                    use std::collections::hash_map::DefaultHasher;
-                    use std::hash::{Hash, Hasher};
-                    let mut h = DefaultHasher::new();
-                    std::time::SystemTime::now().hash(&mut h);
-                    let token = format!("{:016x}", h.finish());
+                    let mut rng = rand::thread_rng();
+                    let token_bytes: Vec<u8> = (0..32).map(|_| rng.gen::<u8>()).collect();
+                    let token = token_bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>();
                     result.push_str(&format!(
                         "<input type=\"hidden\" name=\"csrf_token\" value=\"{}\">", token
                     ));
