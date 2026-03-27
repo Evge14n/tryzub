@@ -173,7 +173,7 @@ fn main() {
     };
 
     if let Err(e) = result {
-        eprintln!("❌ {}", e);
+        eprintln!("[X] {}", e);
         std::process::exit(1);
     }
 }
@@ -233,7 +233,7 @@ fn check_file(file: PathBuf) -> Result<()> {
     let _ast = tryzub_parser::parse(tokens)?;
     println!("  ✓ Синтаксичний аналіз: OK");
 
-    println!("✅ Файл синтаксично правильний");
+    println!("[OK] Файл синтаксично правильний");
     Ok(())
 }
 
@@ -274,11 +274,11 @@ fn run_tests(file: PathBuf) -> Result<()> {
             match tryzub_vm::execute(test_program, vec![]) {
                 Ok(()) => {
                     passed += 1;
-                    println!("  ✅ {}", name);
+                    println!("  [OK] {}", name);
                 }
                 Err(e) => {
                     failed += 1;
-                    println!("  ❌ {} — {}", name, e);
+                    println!("  [X] {} — {}", name, e);
                 }
             }
         }
@@ -341,14 +341,14 @@ fn run_tests(file: PathBuf) -> Result<()> {
                     Ok(()) => {}
                     Err(e) => {
                         fuzz_passed = false;
-                        println!("  ❌ {} (фаз ітерація {}) — {}", name, i, e);
+                        println!("  [X] {} (фаз ітерація {}) — {}", name, i, e);
                         break;
                     }
                 }
             }
             if fuzz_passed {
                 passed += 1;
-                println!("  ✅ {} (50 фаз-ітерацій)", name);
+                println!("  [OK] {} (50 фаз-ітерацій)", name);
             } else {
                 failed += 1;
             }
@@ -359,10 +359,10 @@ fn run_tests(file: PathBuf) -> Result<()> {
     println!("Всього: {} | Пройшли: {} | Провалені: {}", total, passed, failed);
 
     if failed > 0 {
-        println!("\n❌ {} тестів провалено!", failed);
+        println!("\n[X] {} тестів провалено!", failed);
         std::process::exit(1);
     } else if total > 0 {
-        println!("\n✅ Всі {} тестів пройшли!", total);
+        println!("\n[OK] Всі {} тестів пройшли!", total);
     } else {
         println!("\n⚠️ Тестів не знайдено");
     }
@@ -398,7 +398,7 @@ fn run_repl() -> Result<()> {
 
         // Спеціальні команди
         if line == ":вихід" || line == ":quit" || line == ":q" {
-            println!("До побачення! 🇺🇦");
+            println!("До побачення! ");
             break;
         }
 
@@ -426,7 +426,7 @@ fn run_repl() -> Result<()> {
             );
             match run_source(&full_source) {
                 Ok(()) => {}
-                Err(e) => println!("❌ {}", e),
+                Err(e) => println!("[X] {}", e),
             }
             continue;
         }
@@ -443,7 +443,7 @@ fn run_repl() -> Result<()> {
                     let elapsed = start.elapsed();
                     println!("⏱ {:.3}мс", elapsed.as_secs_f64() * 1000.0);
                 }
-                Err(e) => println!("❌ {}", e),
+                Err(e) => println!("[X] {}", e),
             }
             continue;
         }
@@ -461,7 +461,7 @@ fn run_repl() -> Result<()> {
                     println!("✓ Завантажено з {}: {} функцій, {} структур, {} типів",
                         path, funcs, structs, types);
                 }
-                Err(e) => println!("❌ Не вдалося прочитати {}: {}", path, e),
+                Err(e) => println!("[X] Не вдалося прочитати {}: {}", path, e),
             }
             continue;
         }
@@ -502,7 +502,7 @@ fn run_repl() -> Result<()> {
 
         match run_source(&full_source) {
             Ok(()) => {}
-            Err(e) => println!("❌ {}", e),
+            Err(e) => println!("[X] {}", e),
         }
     }
 
@@ -523,7 +523,7 @@ fn create_project(name: String) -> Result<()> {
 // Створено за допомогою мови Тризуб v5.0.0
 
 функція головна() {{
-    друк("Привіт з проекту {}! 🇺🇦")
+    друк("Привіт з проекту {}! ")
 
     // Приклад pattern matching
     змінна значення = Деякий(42)
@@ -549,8 +549,8 @@ fn create_project(name: String) -> Result<()> {
 
     fs::write(format!("{}/проект.toml", name), project_file)?;
 
-    println!("✅ Проект '{}' створено", name);
-    println!("📁 {}/", name);
+    println!("[OK] Проект '{}' створено", name);
+    println!("{}/", name);
     println!("   ├── проект.toml");
     println!("   └── src/");
     println!("       └── головна.тризуб");

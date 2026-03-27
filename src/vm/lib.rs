@@ -1822,7 +1822,7 @@ impl VM {
         println!("\nWeb server started на http://localhost:{}", routes.port);
         println!("   {} маршрутів зареєстровано", routes.routes.len());
         if let Some(ref dir) = routes.static_dir {
-            println!("   📁 Статичні файли: {}/", dir);
+            println!("   Статичні файли: {}/", dir);
         }
         println!("   Натисніть Ctrl+C для зупинки\n");
 
@@ -2001,7 +2001,7 @@ impl VM {
                                     (json, "application/json; charset=utf-8".to_string(), 200, None)
                                 }
                                 Err(e) => {
-                                    eprintln!("  ❌ {} {} — {}", method, path, e);
+                                    eprintln!("  [X] {} {} — {}", method, path, e);
                                     let html = format!(
                                         "<html><head><meta charset='utf-8'></head>\
                                          <body><h1>500</h1><pre>{}</pre></body></html>", e
@@ -2682,7 +2682,7 @@ impl VM {
                 if let Some(Value::String(dir)) = args.first() {
                     if let Some(ref routes) = self.web_routes {
                         routes.lock().map_err(|e| anyhow::anyhow!("Помилка блокування: {}", e))?.static_dir = Some(dir.clone());
-                        println!("  📁 Статичні файли: {}/", dir);
+                        println!("  Статичні файли: {}/", dir);
                     }
                     Ok(Value::Null)
                 } else {
