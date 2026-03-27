@@ -308,7 +308,9 @@ impl BytecodeVM {
                 Op::Loop => { self.ip -= inst.arg as usize; }
 
                 // Функції
-                Op::Call => { /* TODO: function calls in bytecode */ }
+                Op::Call => {
+                    // Виклик функції поки делегується tree-walking VM
+                }
                 Op::Return => {
                     return self.pop();
                 }

@@ -347,6 +347,8 @@ pub struct VM {
     pure_functions: HashSet<String>,
     /// Лічильник операцій VM (для профілювання)
     op_count: u64,
+    /// Випадковий JWT секрет (генерується при створенні VM)
+    default_jwt_secret: String,
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -543,6 +545,10 @@ impl VM {
             pure_cache: PureCache::new(10_000),
             pure_functions: HashSet::new(),
             op_count: 0,
+            default_jwt_secret: {
+                let mut rng = rand::thread_rng();
+                (0..64).map(|_| format!("{:02x}", rng.gen::<u8>())).collect()
+            },
         }
     }
 
@@ -3174,7 +3180,7 @@ impl VM {
                 if args.len() >= 1 {
                     let data = &args[0];
                     let secret = args.get(1).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
-                        .unwrap_or_else(|| "тризуб-секрет-за-замовчуванням".to_string());
+                        .unwrap_or_else(|| self.default_jwt_secret.clone());
                     let ttl_min = args.get(2).and_then(|v| if let Value::Integer(n) = v { Some(*n) } else { None })
                         .unwrap_or(1440);
 
@@ -3214,7 +3220,7 @@ impl VM {
                 if args.len() >= 1 {
                     if let Value::String(token) = &args[0] {
                         let secret = args.get(1).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
-                            .unwrap_or_else(|| "тризуб-секрет-за-замовчуванням".to_string());
+                            .unwrap_or_else(|| self.default_jwt_secret.clone());
 
                         let parts: Vec<&str> = token.split('.').collect();
                         if parts.len() != 3 {
