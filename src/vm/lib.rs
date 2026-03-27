@@ -11,6 +11,12 @@ use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 use serde_json;
 use rusqlite;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use rand::Rng;
+
+type HmacSha256 = Hmac<Sha256>;
 
 // ════════════════════════════════════════════════════════════════════
 // String Interning — рядки порівнюються за O(1) замість O(n)
@@ -3002,61 +3008,65 @@ impl VM {
             // ── Автентифікація (JWT + bcrypt-подібне хешування) ──
 
             "авт_хешувати" => {
-                // авт_хешувати(пароль) → хеш (SHA256 + salt)
+                // PBKDF2-подібне хешування: SHA256 + random salt + 10000 ітерацій
                 match args.first() {
                     Some(Value::String(password)) => {
-                        use std::collections::hash_map::DefaultHasher;
-                        use std::hash::{Hash, Hasher};
-                        // Генеруємо salt з часу
-                        let salt: u64 = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_nanos() as u64;
-                        let mut hasher = DefaultHasher::new();
-                        salt.hash(&mut hasher);
-                        password.hash(&mut hasher);
-                        // Кілька раундів хешування
-                        let mut hash_val = hasher.finish();
-                        for _ in 0..1000 {
-                            let mut h = DefaultHasher::new();
-                            hash_val.hash(&mut h);
-                            password.hash(&mut h);
-                            salt.hash(&mut h);
-                            hash_val = h.finish();
+                        use sha2::{Sha256, Digest};
+                        let mut rng = rand::thread_rng();
+                        let salt: [u8; 16] = rng.gen();
+                        let salt_b64 = URL_SAFE_NO_PAD.encode(&salt);
+
+                        // 10000 ітерацій SHA256(salt + password + prev_hash)
+                        let mut hash = {
+                            let mut h = Sha256::new();
+                            h.update(&salt);
+                            h.update(password.as_bytes());
+                            h.finalize()
+                        };
+                        for _ in 0..10_000 {
+                            let mut h = Sha256::new();
+                            h.update(&salt);
+                            h.update(password.as_bytes());
+                            h.update(&hash);
+                            hash = h.finalize();
                         }
-                        Ok(Value::String(format!("$тх${}${:016x}", salt, hash_val)))
+                        let hash_b64 = URL_SAFE_NO_PAD.encode(&hash);
+                        Ok(Value::String(format!("$тх2$10000${}${}", salt_b64, hash_b64)))
                     }
                     _ => Err(anyhow::anyhow!("авт_хешувати очікує пароль (тхт)")),
                 }
             }
 
             "авт_перевірити" => {
-                // авт_перевірити(пароль, хеш) → лог
+                // Timing-safe перевірка пароля проти збереженого хешу
                 if args.len() >= 2 {
-                    if let (Value::String(password), Value::String(stored_hash)) = (&args[0], &args[1]) {
-                        use std::collections::hash_map::DefaultHasher;
-                        use std::hash::{Hash, Hasher};
-                        // Розбираємо збережений хеш
-                        let parts: Vec<&str> = stored_hash.split('$').collect();
-                        if parts.len() >= 4 && parts[1] == "тх" {
-                            if let Ok(salt) = parts[2].parse::<u64>() {
-                                let mut hasher = DefaultHasher::new();
-                                salt.hash(&mut hasher);
-                                password.hash(&mut hasher);
-                                let mut hash_val = hasher.finish();
-                                for _ in 0..1000 {
-                                    let mut h = DefaultHasher::new();
-                                    hash_val.hash(&mut h);
-                                    password.hash(&mut h);
-                                    salt.hash(&mut h);
-                                    hash_val = h.finish();
-                                }
-                                let computed = format!("$тх${}${:016x}", salt, hash_val);
-                                // Timing-safe порівняння
-                                let eq = stored_hash.len() == computed.len() &&
-                                    stored_hash.bytes().zip(computed.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0;
-                                return Ok(Value::Bool(eq));
+                    if let (Value::String(password), Value::String(stored)) = (&args[0], &args[1]) {
+                        use sha2::{Sha256, Digest};
+                        let parts: Vec<&str> = stored.split('$').collect();
+                        if parts.len() >= 5 && parts[1] == "тх2" {
+                            let rounds: u32 = parts[2].parse().unwrap_or(10_000);
+                            let salt = URL_SAFE_NO_PAD.decode(parts[3]).unwrap_or_default();
+                            let stored_hash = parts[4];
+
+                            let mut hash = {
+                                let mut h = Sha256::new();
+                                h.update(&salt);
+                                h.update(password.as_bytes());
+                                h.finalize()
+                            };
+                            for _ in 0..rounds {
+                                let mut h = Sha256::new();
+                                h.update(&salt);
+                                h.update(password.as_bytes());
+                                h.update(&hash);
+                                hash = h.finalize();
                             }
+                            let computed = URL_SAFE_NO_PAD.encode(&hash);
+                            // Timing-safe
+                            let eq = stored_hash.len() == computed.len() &&
+                                stored_hash.bytes().zip(computed.bytes())
+                                    .fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0;
+                            return Ok(Value::Bool(eq));
                         }
                         Ok(Value::Bool(false))
                     } else {
@@ -3068,16 +3078,13 @@ impl VM {
             }
 
             "авт_створити_токен" => {
-                // авт_створити_токен(дані_словник, секрет, термін_хвилин) → JWT-подібний токен
+                // JWT з HMAC-SHA256 (RFC 7519 сумісний)
                 if args.len() >= 1 {
                     let data = &args[0];
                     let secret = args.get(1).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
                         .unwrap_or_else(|| "тризуб-секрет-за-замовчуванням".to_string());
                     let ttl_min = args.get(2).and_then(|v| if let Value::Integer(n) = v { Some(*n) } else { None })
-                        .unwrap_or(1440); // 24 години
-
-                    use std::collections::hash_map::DefaultHasher;
-                    use std::hash::{Hash, Hasher};
+                        .unwrap_or(1440);
 
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -3085,24 +3092,24 @@ impl VM {
                         .as_secs();
                     let exp = now + (ttl_min as u64 * 60);
 
-                    // Header
-                    let header = serde_json::json!({"алг": "ТХ256", "тип": "JWT"});
-                    let header_b64 = Self::base64_encode(&serde_json::to_string(&header).unwrap_or_default());
+                    let header = r#"{"alg":"HS256","typ":"JWT"}"#;
+                    let header_b64 = URL_SAFE_NO_PAD.encode(header.as_bytes());
 
-                    // Payload
                     let mut payload = VM::value_to_json(data);
                     if let serde_json::Value::Object(ref mut map) = payload {
                         map.insert("exp".to_string(), serde_json::json!(exp));
                         map.insert("iat".to_string(), serde_json::json!(now));
                     }
-                    let payload_b64 = Self::base64_encode(&serde_json::to_string(&payload).unwrap_or_default());
+                    let payload_str = serde_json::to_string(&payload).unwrap_or_default();
+                    let payload_b64 = URL_SAFE_NO_PAD.encode(payload_str.as_bytes());
 
-                    // Signature (HMAC-like з DefaultHasher)
-                    let sign_input = format!("{}.{}.{}", header_b64, payload_b64, secret);
-                    let mut hasher = DefaultHasher::new();
-                    sign_input.hash(&mut hasher);
-                    let sig = format!("{:016x}", hasher.finish());
-                    let sig_b64 = Self::base64_encode(&sig);
+                    // HMAC-SHA256 підпис
+                    let sign_input = format!("{}.{}", header_b64, payload_b64);
+                    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+                        .map_err(|e| anyhow::anyhow!("HMAC помилка: {}", e))?;
+                    mac.update(sign_input.as_bytes());
+                    let sig = mac.finalize().into_bytes();
+                    let sig_b64 = URL_SAFE_NO_PAD.encode(&sig);
 
                     Ok(Value::String(format!("{}.{}.{}", header_b64, payload_b64, sig_b64)))
                 } else {
@@ -3111,14 +3118,11 @@ impl VM {
             }
 
             "авт_перевірити_токен" => {
-                // авт_перевірити_токен(токен, секрет) → дані або Помилка
+                // JWT верифікація з HMAC-SHA256
                 if args.len() >= 1 {
                     if let Value::String(token) = &args[0] {
                         let secret = args.get(1).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
                             .unwrap_or_else(|| "тризуб-секрет-за-замовчуванням".to_string());
-
-                        use std::collections::hash_map::DefaultHasher;
-                        use std::hash::{Hash, Hasher};
 
                         let parts: Vec<&str> = token.split('.').collect();
                         if parts.len() != 3 {
@@ -3129,11 +3133,12 @@ impl VM {
                             });
                         }
 
-                        // Перевіряємо підпис
-                        let sign_input = format!("{}.{}.{}", parts[0], parts[1], secret);
-                        let mut hasher = DefaultHasher::new();
-                        sign_input.hash(&mut hasher);
-                        let expected_sig = Self::base64_encode(&format!("{:016x}", hasher.finish()));
+                        // HMAC-SHA256 верифікація
+                        let sign_input = format!("{}.{}", parts[0], parts[1]);
+                        let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+                            .map_err(|e| anyhow::anyhow!("HMAC: {}", e))?;
+                        mac.update(sign_input.as_bytes());
+                        let expected_sig = URL_SAFE_NO_PAD.encode(&mac.finalize().into_bytes());
 
                         if parts[2] != expected_sig {
                             return Ok(Value::EnumVariant {
@@ -3143,8 +3148,8 @@ impl VM {
                             });
                         }
 
-                        // Декодуємо payload
-                        let payload_str = Self::base64_decode(parts[1]);
+                        let payload_bytes = URL_SAFE_NO_PAD.decode(parts[1]).unwrap_or_default();
+                        let payload_str = String::from_utf8(payload_bytes).unwrap_or_default();
                         if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&payload_str) {
                             // Перевіряємо термін дії
                             if let Some(exp) = json_val.get("exp").and_then(|v| v.as_u64()) {
@@ -4048,45 +4053,7 @@ impl VM {
         result.chars().rev().collect()
     }
 
-    fn base64_encode(input: &str) -> String {
-        const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-        let bytes = input.as_bytes();
-        let mut result = String::new();
-        let mut i = 0;
-        while i < bytes.len() {
-            let b0 = bytes[i] as u32;
-            let b1 = if i + 1 < bytes.len() { bytes[i + 1] as u32 } else { 0 };
-            let b2 = if i + 2 < bytes.len() { bytes[i + 2] as u32 } else { 0 };
-            let triple = (b0 << 16) | (b1 << 8) | b2;
-            result.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
-            result.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
-            if i + 1 < bytes.len() { result.push(CHARS[((triple >> 6) & 0x3F) as usize] as char); }
-            if i + 2 < bytes.len() { result.push(CHARS[(triple & 0x3F) as usize] as char); }
-            i += 3;
-        }
-        result
-    }
-
-    fn base64_decode(input: &str) -> String {
-        const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-        let mut bytes = Vec::new();
-        let input_bytes: Vec<u8> = input.bytes()
-            .filter_map(|b| CHARS.iter().position(|&c| c == b).map(|p| p as u8))
-            .collect();
-        let mut i = 0;
-        while i < input_bytes.len() {
-            let b0 = input_bytes[i] as u32;
-            let b1 = if i + 1 < input_bytes.len() { input_bytes[i + 1] as u32 } else { 0 };
-            let b2 = if i + 2 < input_bytes.len() { input_bytes[i + 2] as u32 } else { 0 };
-            let b3 = if i + 3 < input_bytes.len() { input_bytes[i + 3] as u32 } else { 0 };
-            let triple = (b0 << 18) | (b1 << 12) | (b2 << 6) | b3;
-            bytes.push(((triple >> 16) & 0xFF) as u8);
-            if i + 2 < input_bytes.len() { bytes.push(((triple >> 8) & 0xFF) as u8); }
-            if i + 3 < input_bytes.len() { bytes.push((triple & 0xFF) as u8); }
-            i += 4;
-        }
-        String::from_utf8_lossy(&bytes).to_string()
-    }
+    // base64 тепер через crate base64 (URL_SAFE_NO_PAD)
 
     // ── SQLite допоміжні методи ──
 
