@@ -1,7 +1,7 @@
 pub mod bytecode;
 pub mod compiler;
 
-// Тризуб VM v4.9
+// Тризуб VM v5.0
 
 use anyhow::Result;
 use std::collections::HashMap;
@@ -554,6 +554,17 @@ impl VM {
             scope.set("перевірити_пароль".to_string(), Value::BuiltinFn("перевірити_пароль".to_string()));
             scope.set("хонейпот".to_string(), Value::BuiltinFn("хонейпот".to_string()));
             scope.set("часова_мітка".to_string(), Value::BuiltinFn("часова_мітка".to_string()));
+
+            // IoT / Embedded / Дрони
+            for name in &["serial_відкрити", "serial_записати", "serial_прочитати", "serial_закрити",
+                "serial_порти", "gpio_записати", "gpio_прочитати", "gpio_режим",
+                "pid_створити", "pid_обчислити", "pwm_значення",
+                "відстань_gps", "кут_до_точки",
+                "i2c_записати", "i2c_прочитати", "spi_передати",
+                "затримка_мкс", "затримка_мс",
+                "байти_в_число", "число_в_байти", "біт_встановити", "біт_прочитати"] {
+                scope.set(name.to_string(), Value::BuiltinFn(name.to_string()));
+            }
 
             // Веб-сервер + БД + Автентифікація
             for name in &["веб_сервер", "веб_отримати", "веб_надіслати", "веб_оновити",
@@ -4151,6 +4162,286 @@ impl VM {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
                 Ok(Value::Integer(now as i64))
+            }
+
+            // ── IoT / Embedded / Дрони ──
+
+            "serial_порти" => {
+                let ports = serialport::available_ports().unwrap_or_default();
+                let result: Vec<Value> = ports.iter().map(|p| {
+                    Value::Dict(vec![
+                        (Value::String("порт".into()), Value::String(p.port_name.clone())),
+                        (Value::String("тип".into()), Value::String(format!("{:?}", p.port_type))),
+                    ])
+                }).collect();
+                Ok(Value::Array(result))
+            }
+
+            "serial_відкрити" => {
+                if args.len() >= 2 {
+                    if let (Value::String(port), Value::Integer(baud)) = (&args[0], &args[1]) {
+                        match serialport::new(port, *baud as u32)
+                            .timeout(std::time::Duration::from_millis(1000))
+                            .open() {
+                            Ok(_) => {
+                                println!("  Serial: {} @ {} baud", port, baud);
+                                Ok(Value::Dict(vec![
+                                    (Value::String("порт".into()), Value::String(port.clone())),
+                                    (Value::String("швидкість".into()), Value::Integer(*baud)),
+                                    (Value::String("статус".into()), Value::String("відкрито".into())),
+                                ]))
+                            }
+                            Err(e) => Err(anyhow::anyhow!("Serial: {}", e)),
+                        }
+                    } else { Err(anyhow::anyhow!("serial_відкрити(порт, швидкість)")) }
+                } else { Err(anyhow::anyhow!("serial_відкрити очікує 2 аргументи")) }
+            }
+
+            "serial_записати" => {
+                if args.len() >= 2 {
+                    if let (Value::String(port_name), Value::String(data)) = (&args[0], &args[1]) {
+                        match serialport::new(port_name, 9600)
+                            .timeout(std::time::Duration::from_millis(1000))
+                            .open() {
+                            Ok(mut port) => {
+                                use std::io::Write;
+                                port.write_all(data.as_bytes())
+                                    .map_err(|e| anyhow::anyhow!("Serial write: {}", e))?;
+                                Ok(Value::Integer(data.len() as i64))
+                            }
+                            Err(e) => Err(anyhow::anyhow!("Serial: {}", e)),
+                        }
+                    } else { Err(anyhow::anyhow!("serial_записати(порт, дані)")) }
+                } else { Err(anyhow::anyhow!("serial_записати очікує 2 аргументи")) }
+            }
+
+            "serial_прочитати" => {
+                match args.first() {
+                    Some(Value::String(port_name)) => {
+                        let timeout = args.get(1).and_then(|v| if let Value::Integer(n) = v { Some(*n) } else { None }).unwrap_or(1000);
+                        match serialport::new(port_name, 9600)
+                            .timeout(std::time::Duration::from_millis(timeout as u64))
+                            .open() {
+                            Ok(mut port) => {
+                                use std::io::Read;
+                                let mut buf = vec![0u8; 1024];
+                                match port.read(&mut buf) {
+                                    Ok(n) => Ok(Value::String(String::from_utf8_lossy(&buf[..n]).to_string())),
+                                    Err(_) => Ok(Value::String(String::new())),
+                                }
+                            }
+                            Err(e) => Err(anyhow::anyhow!("Serial: {}", e)),
+                        }
+                    }
+                    _ => Err(anyhow::anyhow!("serial_прочитати(порт)")),
+                }
+            }
+
+            "serial_закрити" => {
+                Ok(Value::Bool(true))
+            }
+
+            "gpio_режим" => {
+                // gpio_режим(пін, "вивід"/"ввід") — для Raspberry Pi через /sys/class/gpio
+                if args.len() >= 2 {
+                    if let (Value::Integer(pin), Value::String(mode)) = (&args[0], &args[1]) {
+                        let direction = if mode == "вивід" || mode == "out" { "out" } else { "in" };
+                        // Export GPIO
+                        let _ = std::fs::write("/sys/class/gpio/export", pin.to_string());
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        let dir_path = format!("/sys/class/gpio/gpio{}/direction", pin);
+                        match std::fs::write(&dir_path, direction) {
+                            Ok(_) => Ok(Value::Bool(true)),
+                            Err(_) => Ok(Value::Bool(false)),
+                        }
+                    } else { Err(anyhow::anyhow!("gpio_режим(пін, режим)")) }
+                } else { Err(anyhow::anyhow!("gpio_режим очікує 2 аргументи")) }
+            }
+
+            "gpio_записати" => {
+                if args.len() >= 2 {
+                    if let (Value::Integer(pin), Value::Integer(val)) = (&args[0], &args[1]) {
+                        let path = format!("/sys/class/gpio/gpio{}/value", pin);
+                        match std::fs::write(&path, if *val != 0 { "1" } else { "0" }) {
+                            Ok(_) => Ok(Value::Bool(true)),
+                            Err(_) => Ok(Value::Bool(false)),
+                        }
+                    } else { Err(anyhow::anyhow!("gpio_записати(пін, значення)")) }
+                } else { Err(anyhow::anyhow!("gpio_записати очікує 2 аргументи")) }
+            }
+
+            "gpio_прочитати" => {
+                match args.first() {
+                    Some(Value::Integer(pin)) => {
+                        let path = format!("/sys/class/gpio/gpio{}/value", pin);
+                        match std::fs::read_to_string(&path) {
+                            Ok(val) => Ok(Value::Integer(val.trim().parse().unwrap_or(0))),
+                            Err(_) => Ok(Value::Integer(0)),
+                        }
+                    }
+                    _ => Err(anyhow::anyhow!("gpio_прочитати(пін)")),
+                }
+            }
+
+            "pid_створити" => {
+                // pid_створити(kp, ki, kd) — PID контролер для дронів/роботів
+                if args.len() >= 3 {
+                    if let (Value::Float(kp), Value::Float(ki), Value::Float(kd)) = (&args[0], &args[1], &args[2]) {
+                        Ok(Value::Dict(vec![
+                            (Value::String("kp".into()), Value::Float(*kp)),
+                            (Value::String("ki".into()), Value::Float(*ki)),
+                            (Value::String("kd".into()), Value::Float(*kd)),
+                            (Value::String("integral".into()), Value::Float(0.0)),
+                            (Value::String("prev_error".into()), Value::Float(0.0)),
+                            (Value::String("dt".into()), Value::Float(0.01)),
+                        ]))
+                    } else { Err(anyhow::anyhow!("pid_створити(kp, ki, kd) — дробові числа")) }
+                } else { Err(anyhow::anyhow!("pid_створити очікує 3 аргументи")) }
+            }
+
+            "pid_обчислити" => {
+                // pid_обчислити(pid, setpoint, current) — повертає корекцію
+                if args.len() >= 3 {
+                    if let (Value::Dict(pid), Value::Float(setpoint), Value::Float(current)) = (&args[0], &args[1], &args[2]) {
+                        let get_f = |name: &str| -> f64 {
+                            pid.iter().find(|(k,_)| k.to_display_string() == name)
+                                .map(|(_, v)| if let Value::Float(f) = v { *f } else { 0.0 })
+                                .unwrap_or(0.0)
+                        };
+                        let kp = get_f("kp");
+                        let ki = get_f("ki");
+                        let kd = get_f("kd");
+                        let prev_error = get_f("prev_error");
+                        let integral = get_f("integral");
+                        let dt = get_f("dt").max(0.001);
+
+                        let error = setpoint - current;
+                        let new_integral = (integral + error * dt).clamp(-1000.0, 1000.0);
+                        let derivative = (error - prev_error) / dt;
+                        let output = kp * error + ki * new_integral + kd * derivative;
+
+                        Ok(Value::Dict(vec![
+                            (Value::String("вивід".into()), Value::Float(output)),
+                            (Value::String("помилка".into()), Value::Float(error)),
+                            (Value::String("kp".into()), Value::Float(kp)),
+                            (Value::String("ki".into()), Value::Float(ki)),
+                            (Value::String("kd".into()), Value::Float(kd)),
+                            (Value::String("integral".into()), Value::Float(new_integral)),
+                            (Value::String("prev_error".into()), Value::Float(error)),
+                            (Value::String("dt".into()), Value::Float(dt)),
+                        ]))
+                    } else { Err(anyhow::anyhow!("pid_обчислити(pid, ціль, поточне)")) }
+                } else { Err(anyhow::anyhow!("pid_обчислити очікує 3 аргументи")) }
+            }
+
+            "pwm_значення" => {
+                // pwm_значення(відсоток, мін_мкс, макс_мкс) — конвертує % в мікросекунди PWM
+                if args.len() >= 1 {
+                    let percent = match &args[0] { Value::Float(f) => *f, Value::Integer(n) => *n as f64, _ => 0.0 };
+                    let min_us = args.get(1).and_then(|v| if let Value::Integer(n) = v { Some(*n as f64) } else if let Value::Float(f) = v { Some(*f) } else { None }).unwrap_or(1000.0);
+                    let max_us = args.get(2).and_then(|v| if let Value::Integer(n) = v { Some(*n as f64) } else if let Value::Float(f) = v { Some(*f) } else { None }).unwrap_or(2000.0);
+                    let us = min_us + (max_us - min_us) * (percent.clamp(0.0, 100.0) / 100.0);
+                    Ok(Value::Float(us))
+                } else { Err(anyhow::anyhow!("pwm_значення(відсоток)")) }
+            }
+
+            "відстань_gps" => {
+                // відстань_gps(lat1, lon1, lat2, lon2) — Haversine формула, метри
+                if args.len() >= 4 {
+                    let to_f = |v: &Value| -> f64 { match v { Value::Float(f) => *f, Value::Integer(n) => *n as f64, _ => 0.0 } };
+                    let lat1 = to_f(&args[0]).to_radians();
+                    let lon1 = to_f(&args[1]).to_radians();
+                    let lat2 = to_f(&args[2]).to_radians();
+                    let lon2 = to_f(&args[3]).to_radians();
+                    let dlat = lat2 - lat1;
+                    let dlon = lon2 - lon1;
+                    let a = (dlat / 2.0).sin().powi(2) + lat1.cos() * lat2.cos() * (dlon / 2.0).sin().powi(2);
+                    let c = 2.0 * a.sqrt().asin();
+                    Ok(Value::Float((6371000.0 * c * 100.0).round() / 100.0))
+                } else { Err(anyhow::anyhow!("відстань_gps(lat1, lon1, lat2, lon2)")) }
+            }
+
+            "кут_до_точки" => {
+                // кут_до_точки(lat1, lon1, lat2, lon2) — bearing в градусах
+                if args.len() >= 4 {
+                    let to_f = |v: &Value| -> f64 { match v { Value::Float(f) => *f, Value::Integer(n) => *n as f64, _ => 0.0 } };
+                    let lat1 = to_f(&args[0]).to_radians();
+                    let lon1 = to_f(&args[1]).to_radians();
+                    let lat2 = to_f(&args[2]).to_radians();
+                    let lon2 = to_f(&args[3]).to_radians();
+                    let dlon = lon2 - lon1;
+                    let x = dlon.sin() * lat2.cos();
+                    let y = lat1.cos() * lat2.sin() - lat1.sin() * lat2.cos() * dlon.cos();
+                    let bearing = x.atan2(y).to_degrees();
+                    Ok(Value::Float(((bearing + 360.0) % 360.0 * 100.0).round() / 100.0))
+                } else { Err(anyhow::anyhow!("кут_до_точки(lat1, lon1, lat2, lon2)")) }
+            }
+
+            "i2c_записати" | "i2c_прочитати" | "spi_передати" => {
+                // I2C/SPI через /dev/ на Linux
+                Err(anyhow::anyhow!("{}: потрібна Linux система з /dev/i2c або /dev/spi", name))
+            }
+
+            "затримка_мкс" => {
+                match args.first() {
+                    Some(Value::Integer(us)) => {
+                        std::thread::sleep(std::time::Duration::from_micros(*us as u64));
+                        Ok(Value::Null)
+                    }
+                    _ => Err(anyhow::anyhow!("затримка_мкс(мікросекунди)")),
+                }
+            }
+
+            "затримка_мс" => {
+                match args.first() {
+                    Some(Value::Integer(ms)) => {
+                        std::thread::sleep(std::time::Duration::from_millis(*ms as u64));
+                        Ok(Value::Null)
+                    }
+                    _ => Err(anyhow::anyhow!("затримка_мс(мілісекунди)")),
+                }
+            }
+
+            "байти_в_число" => {
+                // байти_в_число([байт1, байт2, ...], "le"/"be") — конвертує масив байтів в число
+                if let Some(Value::Array(bytes)) = args.first() {
+                    let be = args.get(1).map(|v| v.to_display_string() == "be").unwrap_or(false);
+                    let byte_vals: Vec<u8> = bytes.iter().map(|v| match v { Value::Integer(n) => *n as u8, _ => 0 }).collect();
+                    let result: i64 = if be {
+                        byte_vals.iter().fold(0i64, |acc, &b| (acc << 8) | b as i64)
+                    } else {
+                        byte_vals.iter().rev().fold(0i64, |acc, &b| (acc << 8) | b as i64)
+                    };
+                    Ok(Value::Integer(result))
+                } else { Err(anyhow::anyhow!("байти_в_число([байти])")) }
+            }
+
+            "число_в_байти" => {
+                // число_в_байти(число, кількість_байтів) — конвертує число в масив байтів
+                if args.len() >= 1 {
+                    let num = match &args[0] { Value::Integer(n) => *n, _ => 0 };
+                    let count = args.get(1).and_then(|v| if let Value::Integer(n) = v { Some(*n) } else { None }).unwrap_or(4) as usize;
+                    let bytes: Vec<Value> = (0..count).map(|i| Value::Integer((num >> (i * 8)) & 0xFF)).collect();
+                    Ok(Value::Array(bytes))
+                } else { Err(anyhow::anyhow!("число_в_байти(число)")) }
+            }
+
+            "біт_встановити" => {
+                // біт_встановити(число, позиція, значення) — встановлює біт
+                if args.len() >= 3 {
+                    if let (Value::Integer(num), Value::Integer(pos), Value::Integer(val)) = (&args[0], &args[1], &args[2]) {
+                        if *val != 0 { Ok(Value::Integer(num | (1 << pos))) }
+                        else { Ok(Value::Integer(num & !(1 << pos))) }
+                    } else { Err(anyhow::anyhow!("біт_встановити(число, позиція, значення)")) }
+                } else { Err(anyhow::anyhow!("біт_встановити очікує 3 аргументи")) }
+            }
+
+            "біт_прочитати" => {
+                if args.len() >= 2 {
+                    if let (Value::Integer(num), Value::Integer(pos)) = (&args[0], &args[1]) {
+                        Ok(Value::Integer((num >> pos) & 1))
+                    } else { Err(anyhow::anyhow!("біт_прочитати(число, позиція)")) }
+                } else { Err(anyhow::anyhow!("біт_прочитати очікує 2 аргументи")) }
             }
 
             // ── Оптимізація та профілювання ──
