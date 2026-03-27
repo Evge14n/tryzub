@@ -1808,7 +1808,7 @@ impl VM {
         let listener = TcpListener::bind(&addr)
             .map_err(|e| anyhow::anyhow!("Не вдалося запустити сервер на {}: {}", addr, e))?;
 
-        println!("\nТризуб Web запущено на http://localhost:{}", routes.port);
+        println!("\nWeb server started на http://localhost:{}", routes.port);
         println!("   {} маршрутів зареєстровано", routes.routes.len());
         if let Some(ref dir) = routes.static_dir {
             println!("   📁 Статичні файли: {}/", dir);
@@ -2029,13 +2029,13 @@ impl VM {
                             } else {
                                 let html = "<html><head><meta charset='utf-8'></head>\
                                             <body style='font-family:sans-serif;text-align:center;padding:50px'>\
-                                            <h1>404</h1><p>Сторінку не знайдено</p><hr><p>Тризуб Web</p></body></html>";
+                                            <h1>404</h1><p>Сторінку не знайдено</p><hr><p>Web Server</p></body></html>";
                                 (html.to_string(), "text/html; charset=utf-8".to_string(), 404, None)
                             }
                         } else {
                             let html = "<html><head><meta charset='utf-8'></head>\
                                         <body style='font-family:sans-serif;text-align:center;padding:50px'>\
-                                        <h1>404</h1><p>Сторінку не знайдено</p><hr><p>Тризуб Web</p></body></html>";
+                                        <h1>404</h1><p>Сторінку не знайдено</p><hr><p>Web Server</p></body></html>";
                             (html.to_string(), "text/html; charset=utf-8".to_string(), 404, None)
                         };
 
@@ -2634,7 +2634,7 @@ impl VM {
                 };
                 // Зберігаємо порт у глобальному стані VM
                 self.web_routes = Some(Arc::new(Mutex::new(WebRoutes::new(port))));
-                println!("Тризуб Web сервер ініціалізовано на порті {}", port);
+                println!("Web server initialized на порті {}", port);
                 Ok(Value::Integer(port as i64))
             }
 
@@ -2743,7 +2743,7 @@ impl VM {
                 let html = format!(
                     "<html><head><meta charset='utf-8'><title>Помилка {}</title></head>\
                      <body style='font-family:sans-serif;text-align:center;padding:50px'>\
-                     <h1>{}</h1><p>{}</p><hr><p>Тризуб Web</p></body></html>",
+                     <h1>{}</h1><p>{}</p><hr><p>Web Server</p></body></html>",
                     status, status, msg
                 );
                 Ok(Value::Dict(vec![
