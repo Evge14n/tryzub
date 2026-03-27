@@ -1,4 +1,6 @@
-// Тризуб VM v4.2 — Оптимізований інтерпретатор
+pub mod bytecode;
+
+// Тризуб VM v4.3 — Оптимізований інтерпретатор + Bytecode
 
 use anyhow::Result;
 use std::collections::HashMap;

@@ -11,7 +11,7 @@ use std::fs;
 #[derive(Parser)]
 #[command(name = "tryzub")]
 #[command(author = "******* <*******>")]
-#[command(version = "4.2.0")]
+#[command(version = "4.3.0")]
 #[command(about = "Тризуб — сучасна українська мова програмування ")]
 struct Cli {
     #[command(subcommand)]
@@ -143,12 +143,23 @@ fn main() {
             let tryzub_time = start.elapsed();
             println!("  Сума 1..10000:  {:>8.2} мс", tryzub_time.as_secs_f64() * 1000.0);
 
-            println!("\n  Порівняння:");
-            println!("  Тризуб VM:     {:>8.2} мс (Rust-powered, zero GC)", tryzub_time.as_secs_f64() * 1000.0);
+            // Bytecode VM бенчмарк
+            println!("\n  Bytecode VM:");
+            let (bc_result, bc_time) = tryzub_vm::bytecode::benchmark_sum_bytecode(10001);
+            println!("  Сума 1..10000:  {:>8.2} мс (результат: {})", bc_time.as_secs_f64() * 1000.0, bc_result);
+
+            // Великий тест
+            let (bc_result_big, bc_time_big) = tryzub_vm::bytecode::benchmark_sum_bytecode(10_000_001);
+            println!("  Сума 1..10M:    {:>8.2} мс (результат: {})", bc_time_big.as_secs_f64() * 1000.0, bc_result_big);
+
+            println!("\n  Порівняння (сума 1..10000):");
+            println!("  Тризуб Tree:   {:>8.2} мс (AST interpreter + pattern opt)", tryzub_time.as_secs_f64() * 1000.0);
+            println!("  Тризуб Byte:   {:>8.2} мс (Stack bytecode VM)", bc_time.as_secs_f64() * 1000.0);
             println!("  Python ~3.12:  ~  15-25 мс (CPython, GC overhead)");
             println!("  Ruby ~3.3:     ~  20-40 мс (YARV, GC)");
             println!("  Node.js ~22:   ~   2-5  мс (V8 JIT, GC)");
             println!("  Lua ~5.4:      ~   5-10 мс (Register VM)");
+            println!("  C/Rust:        ~   0.01 мс (Native compiled)");
 
             Ok(())
         }
