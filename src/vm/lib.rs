@@ -1,7 +1,7 @@
 pub mod bytecode;
 pub mod compiler;
 
-// Тризуб VM v4.6
+// Тризуб VM v4.7
 
 use anyhow::Result;
 use std::collections::HashMap;
@@ -516,6 +516,12 @@ impl VM {
             scope.set("http_отримати".to_string(), Value::BuiltinFn("http_отримати".to_string()));
             scope.set("http_надіслати".to_string(), Value::BuiltinFn("http_надіслати".to_string()));
 
+            // Сесії
+            scope.set("веб_сесія_зберегти".to_string(), Value::BuiltinFn("веб_сесія_зберегти".to_string()));
+            scope.set("веб_сесія_отримати".to_string(), Value::BuiltinFn("веб_сесія_отримати".to_string()));
+            scope.set("веб_сесія_видалити".to_string(), Value::BuiltinFn("веб_сесія_видалити".to_string()));
+            scope.set("веб_зберегти_файл".to_string(), Value::BuiltinFn("веб_зберегти_файл".to_string()));
+
             // Вбудовані конструктори Опція/Результат
             scope.set("Деякий".to_string(), Value::BuiltinFn("Деякий".to_string()));
             scope.set("Нічого".to_string(), Value::EnumVariant {
@@ -562,29 +568,24 @@ impl VM {
     }
 
     pub fn execute_program(&mut self, program: Program, _args: Vec<String>) -> Result<()> {
+        // Спочатку реєструємо всі оголошення
         for decl in &program.declarations {
             self.execute_declaration(decl.clone())?;
         }
 
+        // Шукаємо функцію головна() — якщо є, запускаємо
         let main_fn = self.global_env.borrow().get("головна");
         if let Some(Value::Function { params, body, closure, .. }) = main_fn {
-            if params.iter().any(|p| p.name != "себе") && !params.is_empty() {
-                return Err(anyhow::anyhow!("Функція 'головна' не повинна мати параметрів"));
-            }
-
             let prev_env = self.current_env.clone();
             self.current_env = Rc::new(RefCell::new(Scope::new(Some(closure))));
-
             for stmt in body {
                 self.execute_statement(stmt)?;
                 if self.return_value.is_some() { break; }
             }
-
             self.return_value = None;
             self.current_env = prev_env;
-        } else {
-            return Err(anyhow::anyhow!("Не знайдено функцію 'головна'"));
         }
+        // Якщо немає головна() — не помилка, оголошення вже виконались
 
         Ok(())
     }
@@ -2753,6 +2754,95 @@ impl VM {
                     }
                     _ => Err(anyhow::anyhow!("веб_gzip очікує рядок")),
                 }
+            }
+
+            // ── Сесії зі збереженням у SQLite ──
+
+            "веб_сесія_зберегти" => {
+                // веб_сесія_зберегти(session_id, дані) → зберігає в SQLite
+                if args.len() >= 2 {
+                    if let (Value::String(sid), data) = (&args[0], &args[1]) {
+                        let json = serde_json::to_string(&VM::value_to_json(data)).unwrap_or_default();
+                        if let Some(conn) = self.get_db_connection() {
+                            let db = conn.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
+                            let _ = db.execute_batch("CREATE TABLE IF NOT EXISTS __сесії (ід TEXT PRIMARY KEY, дані TEXT, оновлено INTEGER)");
+                            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+                            db.execute("INSERT OR REPLACE INTO __сесії (ід, дані, оновлено) VALUES (?1, ?2, ?3)",
+                                rusqlite::params![sid, json, now as i64])
+                                .map_err(|e| anyhow::anyhow!("Сесія: {}", e))?;
+                            Ok(Value::Bool(true))
+                        } else {
+                            Err(anyhow::anyhow!("БД не відкрита для сесій"))
+                        }
+                    } else { Err(anyhow::anyhow!("веб_сесія_зберегти(ід, дані)")) }
+                } else { Err(anyhow::anyhow!("веб_сесія_зберегти очікує 2 аргументи")) }
+            }
+
+            "веб_сесія_отримати" => {
+                // веб_сесія_отримати(session_id) → дані або Null
+                match args.first() {
+                    Some(Value::String(sid)) => {
+                        if let Some(conn) = self.get_db_connection() {
+                            let db = conn.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
+                            let result: Result<String, _> = db.query_row(
+                                "SELECT дані FROM __сесії WHERE ід = ?1", rusqlite::params![sid],
+                                |row| row.get(0));
+                            match result {
+                                Ok(json_str) => {
+                                    if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                                        Ok(VM::json_to_value(&json_val))
+                                    } else { Ok(Value::Null) }
+                                }
+                                Err(_) => Ok(Value::Null),
+                            }
+                        } else { Ok(Value::Null) }
+                    }
+                    _ => Ok(Value::Null),
+                }
+            }
+
+            "веб_сесія_видалити" => {
+                match args.first() {
+                    Some(Value::String(sid)) => {
+                        if let Some(conn) = self.get_db_connection() {
+                            let db = conn.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
+                            let _ = db.execute("DELETE FROM __сесії WHERE ід = ?1", rusqlite::params![sid]);
+                        }
+                        Ok(Value::Bool(true))
+                    }
+                    _ => Ok(Value::Bool(false)),
+                }
+            }
+
+            // ── Файловий upload ──
+
+            "веб_зберегти_файл" => {
+                // веб_зберегти_файл(дані_base64, шлях) → зберігає файл
+                if args.len() >= 2 {
+                    if let (Value::String(data), Value::String(path)) = (&args[0], &args[1]) {
+                        if path.contains("..") || path.contains('\0') {
+                            return Err(anyhow::anyhow!("Небезпечний шлях файлу"));
+                        }
+                        if let Some(parent) = std::path::Path::new(path).parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        if let Ok(bytes) = URL_SAFE_NO_PAD.decode(data) {
+                            std::fs::write(path, &bytes)
+                                .map_err(|e| anyhow::anyhow!("Запис файлу: {}", e))?;
+                            Ok(Value::Dict(vec![
+                                (Value::String("шлях".into()), Value::String(path.clone())),
+                                (Value::String("розмір".into()), Value::Integer(bytes.len() as i64)),
+                            ]))
+                        } else {
+                            std::fs::write(path, data.as_bytes())
+                                .map_err(|e| anyhow::anyhow!("Запис файлу: {}", e))?;
+                            Ok(Value::Dict(vec![
+                                (Value::String("шлях".into()), Value::String(path.clone())),
+                                (Value::String("розмір".into()), Value::Integer(data.len() as i64)),
+                            ]))
+                        }
+                    } else { Err(anyhow::anyhow!("веб_зберегти_файл(дані, шлях)")) }
+                } else { Err(anyhow::anyhow!("веб_зберегти_файл очікує 2 аргументи")) }
             }
 
             // ── SQLite ORM ──
