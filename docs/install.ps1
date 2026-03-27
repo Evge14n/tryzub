@@ -8,7 +8,7 @@ $INSTALL_DIR = "$env:USERPROFILE\.tryzub"
 $BIN_DIR = "$INSTALL_DIR\bin"
 
 Write-Host ""
-Write-Host "  🔱 Встановлення мови програмування Тризуб" -ForegroundColor Yellow
+Write-Host "  Встановлення мови програмування Тризуб" -ForegroundColor Yellow
 Write-Host "  ─────────────────────────────────────────────" -ForegroundColor Cyan
 Write-Host ""
 
@@ -80,7 +80,7 @@ if ($currentPath -notlike "*$BIN_DIR*") {
 
 Write-Host ""
 Write-Host "  ────────────────────────────────────────────" -ForegroundColor Green
-Write-Host "  🔱 Тризуб успішно встановлено!" -ForegroundColor Green
+Write-Host "  Тризуб успішно встановлено!" -ForegroundColor Green
 Write-Host "  ────────────────────────────────────────────" -ForegroundColor Green
 Write-Host ""
 Write-Host "  Розташування: $BIN_DIR" -ForegroundColor Cyan

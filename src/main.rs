@@ -123,7 +123,7 @@ fn main() {
             WebCommands::Run { file, port } => run_file(file, vec![port.to_string()]),
         },
         Commands::Benchmark { iterations } => {
-            println!("\n🔱 Тризуб VM — Бенчмарк швидкості\n");
+            println!("\nТризуб VM — Бенчмарк швидкості\n");
             let mut vm = tryzub_vm::VM::new();
             let _ = vm.call_builtin("бенчмарк_вбудований", vec![tryzub_vm::Value::Integer(iterations as i64)]);
 
@@ -192,7 +192,7 @@ fn profile_file(file: PathBuf) -> Result<()> {
     let elapsed = start.elapsed();
 
     if let Ok(stats) = vm.call_builtin("статистика_vm", vec![]) {
-        println!("\n  📊 Профіль: {:?}", file);
+        println!("\n  Профіль: {:?}", file);
         println!("  Час виконання: {:.2} мс", elapsed.as_secs_f64() * 1000.0);
         if let tryzub_vm::Value::Dict(pairs) = stats {
             for (k, v) in pairs {
@@ -225,7 +225,7 @@ fn check_file(file: PathBuf) -> Result<()> {
     let source = fs::read_to_string(&file)
         .map_err(|e| anyhow::anyhow!("Не вдалося прочитати файл {:?}: {}", file, e))?;
 
-    println!("🔍 Перевіряю: {:?}", file);
+    println!("Перевіряю: {:?}", file);
 
     let tokens = tryzub_lexer::tokenize(&source)?;
     println!("  ✓ Лексичний аналіз: {} токенів", tokens.len());
