@@ -1,4 +1,5 @@
 pub mod bytecode;
+pub mod compiler;
 
 // Тризуб VM v4.3 — Оптимізований інтерпретатор + Bytecode
 
