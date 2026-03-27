@@ -1808,7 +1808,7 @@ impl VM {
         let listener = TcpListener::bind(&addr)
             .map_err(|e| anyhow::anyhow!("Не вдалося запустити сервер на {}: {}", addr, e))?;
 
-        println!("\n🔱 Тризуб Web запущено на http://localhost:{}", routes.port);
+        println!("\nТризуб Web запущено на http://localhost:{}", routes.port);
         println!("   {} маршрутів зареєстровано", routes.routes.len());
         if let Some(ref dir) = routes.static_dir {
             println!("   📁 Статичні файли: {}/", dir);
@@ -2634,7 +2634,7 @@ impl VM {
                 };
                 // Зберігаємо порт у глобальному стані VM
                 self.web_routes = Some(Arc::new(Mutex::new(WebRoutes::new(port))));
-                println!("🔱 Тризуб Web сервер ініціалізовано на порті {}", port);
+                println!("Тризуб Web сервер ініціалізовано на порті {}", port);
                 Ok(Value::Integer(port as i64))
             }
 
@@ -2922,7 +2922,7 @@ impl VM {
                         let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;");
                         let db = Arc::new(Mutex::new(conn));
                         self.db_connections.insert(path.clone(), db);
-                        println!("  📦 База даних: {}", path);
+                        println!("  База даних: {}", path);
                         Ok(Value::String(path))
                     }
                     Err(e) => Err(anyhow::anyhow!("Не вдалося відкрити БД: {}", e)),
@@ -4105,7 +4105,7 @@ impl VM {
                 match args.first() {
                     Some(Value::Integer(port)) => {
                         let addr = format!("0.0.0.0:{}", port);
-                        println!("\n  🍯 Хонейпот запущено на порті {}", port);
+                        println!("\n  Хонейпот запущено на порті {}", port);
                         println!("  Логую всі з'єднання... (Ctrl+C для зупинки)\n");
                         match std::net::TcpListener::bind(&addr) {
                             Ok(listener) => {
@@ -4222,7 +4222,7 @@ impl VM {
 
                 let total = start.elapsed();
 
-                println!("\n  ⚡ Бенчмарк Тризуб VM ({} ітерацій)", iterations);
+                println!("\n  Бенчмарк Тризуб VM ({} ітерацій)", iterations);
                 println!("  ─────────────────────────────────────");
                 println!("  Арифметика:     {:>8.2} мс ({:.0} млн оп/с)",
                     arith_time.as_secs_f64() * 1000.0,
