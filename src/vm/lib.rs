@@ -1,7 +1,7 @@
 pub mod bytecode;
 pub mod compiler;
 
-// Тризуб VM v4.7
+// Тризуб VM v4.8
 
 use anyhow::Result;
 use std::collections::HashMap;
@@ -13,6 +13,7 @@ use serde_json;
 use rusqlite;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
+use sha2::Digest as Sha2Digest;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use rand::Rng;
 
@@ -521,6 +522,24 @@ impl VM {
             scope.set("веб_сесія_отримати".to_string(), Value::BuiltinFn("веб_сесія_отримати".to_string()));
             scope.set("веб_сесія_видалити".to_string(), Value::BuiltinFn("веб_сесія_видалити".to_string()));
             scope.set("веб_зберегти_файл".to_string(), Value::BuiltinFn("веб_зберегти_файл".to_string()));
+
+            // Кібербезпека
+            scope.set("хеш_md5".to_string(), Value::BuiltinFn("хеш_md5".to_string()));
+            scope.set("хеш_sha256".to_string(), Value::BuiltinFn("хеш_sha256".to_string()));
+            scope.set("хеш_sha512".to_string(), Value::BuiltinFn("хеш_sha512".to_string()));
+            scope.set("шифрувати_aes".to_string(), Value::BuiltinFn("шифрувати_aes".to_string()));
+            scope.set("розшифрувати_aes".to_string(), Value::BuiltinFn("розшифрувати_aes".to_string()));
+            scope.set("в_hex".to_string(), Value::BuiltinFn("в_hex".to_string()));
+            scope.set("з_hex".to_string(), Value::BuiltinFn("з_hex".to_string()));
+            scope.set("в_base64".to_string(), Value::BuiltinFn("в_base64".to_string()));
+            scope.set("з_base64".to_string(), Value::BuiltinFn("з_base64".to_string()));
+            scope.set("сканувати_порт".to_string(), Value::BuiltinFn("сканувати_порт".to_string()));
+            scope.set("сканувати_порти".to_string(), Value::BuiltinFn("сканувати_порти".to_string()));
+            scope.set("генерувати_пароль".to_string(), Value::BuiltinFn("генерувати_пароль".to_string()));
+            scope.set("генерувати_токен".to_string(), Value::BuiltinFn("генерувати_токен".to_string()));
+            scope.set("dns_запит".to_string(), Value::BuiltinFn("dns_запит".to_string()));
+            scope.set("url_кодувати".to_string(), Value::BuiltinFn("url_кодувати".to_string()));
+            scope.set("url_розкодувати".to_string(), Value::BuiltinFn("url_розкодувати".to_string()));
 
             // Вбудовані конструктори Опція/Результат
             scope.set("Деякий".to_string(), Value::BuiltinFn("Деякий".to_string()));
@@ -3520,6 +3539,252 @@ impl VM {
                         }
                     } else { Err(anyhow::anyhow!("http_надіслати очікує (URL, тіло)")) }
                 } else { Err(anyhow::anyhow!("http_надіслати очікує 2 аргументи")) }
+            }
+
+            // ── Кібербезпека ──
+
+            "хеш_md5" => {
+                match args.first() {
+                    Some(Value::String(s)) => {
+                        use md5::Digest;
+                        let mut hasher = md5::Md5::new();
+                        hasher.update(s.as_bytes());
+                        Ok(Value::String(format!("{:x}", hasher.finalize())))
+                    }
+                    _ => Err(anyhow::anyhow!("хеш_md5 очікує рядок")),
+                }
+            }
+
+            "хеш_sha256" => {
+                match args.first() {
+                    Some(Value::String(s)) => {
+                        use sha2::Digest;
+                        let mut hasher = sha2::Sha256::new();
+                        hasher.update(s.as_bytes());
+                        Ok(Value::String(format!("{:x}", hasher.finalize())))
+                    }
+                    _ => Err(anyhow::anyhow!("хеш_sha256 очікує рядок")),
+                }
+            }
+
+            "хеш_sha512" => {
+                match args.first() {
+                    Some(Value::String(s)) => {
+                        use sha2::Digest;
+                        let mut hasher = sha2::Sha512::new();
+                        hasher.update(s.as_bytes());
+                        Ok(Value::String(format!("{:x}", hasher.finalize())))
+                    }
+                    _ => Err(anyhow::anyhow!("хеш_sha512 очікує рядок")),
+                }
+            }
+
+            "шифрувати_aes" => {
+                // шифрувати_aes(текст, ключ_32_байти) → зашифрований base64
+                if args.len() >= 2 {
+                    if let (Value::String(plaintext), Value::String(key)) = (&args[0], &args[1]) {
+                        use aes_gcm::{Aes256Gcm, Key, Nonce, aead::{Aead, KeyInit}};
+                        let key_bytes = sha2::Sha256::digest(key.as_bytes());
+                        let cipher_key = Key::<Aes256Gcm>::from_slice(&key_bytes);
+                        let cipher = Aes256Gcm::new(cipher_key);
+                        let mut nonce_bytes = [0u8; 12];
+                        let mut rng = rand::thread_rng();
+                        for b in &mut nonce_bytes { *b = rng.gen(); }
+                        let nonce = Nonce::from_slice(&nonce_bytes);
+                        match cipher.encrypt(nonce, plaintext.as_bytes().as_ref()) {
+                            Ok(ciphertext) => {
+                                let mut result = nonce_bytes.to_vec();
+                                result.extend_from_slice(&ciphertext);
+                                Ok(Value::String(URL_SAFE_NO_PAD.encode(&result)))
+                            }
+                            Err(e) => Err(anyhow::anyhow!("AES шифрування: {}", e)),
+                        }
+                    } else { Err(anyhow::anyhow!("шифрувати_aes(текст, ключ)")) }
+                } else { Err(anyhow::anyhow!("шифрувати_aes очікує 2 аргументи")) }
+            }
+
+            "розшифрувати_aes" => {
+                if args.len() >= 2 {
+                    if let (Value::String(encrypted), Value::String(key)) = (&args[0], &args[1]) {
+                        use aes_gcm::{Aes256Gcm, Key, Nonce, aead::{Aead, KeyInit}};
+                        use sha2::Digest;
+                        let key_bytes = sha2::Sha256::digest(key.as_bytes());
+                        let cipher_key = Key::<Aes256Gcm>::from_slice(&key_bytes);
+                        let cipher = Aes256Gcm::new(cipher_key);
+                        match URL_SAFE_NO_PAD.decode(encrypted) {
+                            Ok(data) if data.len() > 12 => {
+                                let nonce = Nonce::from_slice(&data[..12]);
+                                match cipher.decrypt(nonce, &data[12..]) {
+                                    Ok(plaintext) => Ok(Value::String(String::from_utf8_lossy(&plaintext).to_string())),
+                                    Err(_) => Ok(Value::EnumVariant {
+                                        type_name: "Результат".into(), variant: "Помилка".into(),
+                                        fields: vec![Value::String("Невірний ключ або пошкоджені дані".into())],
+                                    }),
+                                }
+                            }
+                            _ => Err(anyhow::anyhow!("Невалідні зашифровані дані")),
+                        }
+                    } else { Err(anyhow::anyhow!("розшифрувати_aes(дані, ключ)")) }
+                } else { Err(anyhow::anyhow!("розшифрувати_aes очікує 2 аргументи")) }
+            }
+
+            "в_hex" => {
+                match args.first() {
+                    Some(Value::String(s)) => Ok(Value::String(hex::encode(s.as_bytes()))),
+                    Some(Value::Integer(n)) => Ok(Value::String(format!("{:x}", n))),
+                    _ => Err(anyhow::anyhow!("в_hex очікує рядок або число")),
+                }
+            }
+
+            "з_hex" => {
+                match args.first() {
+                    Some(Value::String(s)) => {
+                        match hex::decode(s) {
+                            Ok(bytes) => Ok(Value::String(String::from_utf8_lossy(&bytes).to_string())),
+                            Err(e) => Err(anyhow::anyhow!("Невалідний hex: {}", e)),
+                        }
+                    }
+                    _ => Err(anyhow::anyhow!("з_hex очікує рядок")),
+                }
+            }
+
+            "в_base64" => {
+                match args.first() {
+                    Some(Value::String(s)) => Ok(Value::String(URL_SAFE_NO_PAD.encode(s.as_bytes()))),
+                    _ => Err(anyhow::anyhow!("в_base64 очікує рядок")),
+                }
+            }
+
+            "з_base64" => {
+                match args.first() {
+                    Some(Value::String(s)) => {
+                        match URL_SAFE_NO_PAD.decode(s) {
+                            Ok(bytes) => Ok(Value::String(String::from_utf8_lossy(&bytes).to_string())),
+                            Err(e) => Err(anyhow::anyhow!("Невалідний base64: {}", e)),
+                        }
+                    }
+                    _ => Err(anyhow::anyhow!("з_base64 очікує рядок")),
+                }
+            }
+
+            "сканувати_порт" => {
+                // сканувати_порт(хост, порт, таймаут_мс) → лог
+                if args.len() >= 2 {
+                    if let (Value::String(host), Value::Integer(port)) = (&args[0], &args[1]) {
+                        let timeout_ms = args.get(2).and_then(|v| if let Value::Integer(n) = v { Some(*n) } else { None }).unwrap_or(1000);
+                        let addr = format!("{}:{}", host, port);
+                        let timeout = std::time::Duration::from_millis(timeout_ms as u64);
+                        match std::net::TcpStream::connect_timeout(
+                            &addr.parse().unwrap_or_else(|_| std::net::SocketAddr::from(([127,0,0,1], *port as u16))),
+                            timeout
+                        ) {
+                            Ok(_) => Ok(Value::Bool(true)),
+                            Err(_) => Ok(Value::Bool(false)),
+                        }
+                    } else { Err(anyhow::anyhow!("сканувати_порт(хост, порт)")) }
+                } else { Err(anyhow::anyhow!("сканувати_порт очікує 2 аргументи")) }
+            }
+
+            "сканувати_порти" => {
+                // сканувати_порти(хост, від, до) → масив відкритих портів
+                if args.len() >= 3 {
+                    if let (Value::String(host), Value::Integer(from), Value::Integer(to)) = (&args[0], &args[1], &args[2]) {
+                        let timeout = std::time::Duration::from_millis(200);
+                        let mut open_ports = Vec::new();
+                        for port in *from..=*to {
+                            let addr = format!("{}:{}", host, port);
+                            if let Ok(parsed) = addr.parse::<std::net::SocketAddr>() {
+                                if std::net::TcpStream::connect_timeout(&parsed, timeout).is_ok() {
+                                    open_ports.push(Value::Integer(port));
+                                }
+                            }
+                        }
+                        Ok(Value::Array(open_ports))
+                    } else { Err(anyhow::anyhow!("сканувати_порти(хост, від, до)")) }
+                } else { Err(anyhow::anyhow!("сканувати_порти очікує 3 аргументи")) }
+            }
+
+            "генерувати_пароль" => {
+                // генерувати_пароль(довжина, опції) → безпечний пароль
+                let length = match args.first() {
+                    Some(Value::Integer(n)) => *n as usize,
+                    _ => 16,
+                };
+                let charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+[]{}|;:,.<>?";
+                let chars: Vec<char> = charset.chars().collect();
+                let mut rng = rand::thread_rng();
+                let password: String = (0..length).map(|_| chars[rng.gen_range(0..chars.len())]).collect();
+                Ok(Value::String(password))
+            }
+
+            "генерувати_токен" => {
+                // генерувати_токен(довжина_байтів) → криптостійкий hex токен
+                let bytes = match args.first() {
+                    Some(Value::Integer(n)) => *n as usize,
+                    _ => 32,
+                };
+                let mut rng = rand::thread_rng();
+                let token: String = (0..bytes).map(|_| format!("{:02x}", rng.gen::<u8>())).collect();
+                Ok(Value::String(token))
+            }
+
+            "dns_запит" => {
+                // dns_запит(домен) → масив IP адрес
+                match args.first() {
+                    Some(Value::String(domain)) => {
+                        use std::net::ToSocketAddrs;
+                        let addr = format!("{}:80", domain);
+                        match addr.to_socket_addrs() {
+                            Ok(addrs) => {
+                                let ips: Vec<Value> = addrs
+                                    .map(|a| Value::String(a.ip().to_string()))
+                                    .collect();
+                                Ok(Value::Array(ips))
+                            }
+                            Err(e) => Ok(Value::Array(vec![Value::String(format!("Помилка: {}", e))])),
+                        }
+                    }
+                    _ => Err(anyhow::anyhow!("dns_запит очікує домен")),
+                }
+            }
+
+            "url_кодувати" => {
+                match args.first() {
+                    Some(Value::String(s)) => {
+                        let encoded: String = s.chars().map(|c| {
+                            if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '~' {
+                                c.to_string()
+                            } else {
+                                format!("%{:02X}", c as u32)
+                            }
+                        }).collect();
+                        Ok(Value::String(encoded))
+                    }
+                    _ => Err(anyhow::anyhow!("url_кодувати очікує рядок")),
+                }
+            }
+
+            "url_розкодувати" => {
+                match args.first() {
+                    Some(Value::String(s)) => {
+                        let mut result = String::new();
+                        let mut chars = s.chars();
+                        while let Some(c) = chars.next() {
+                            if c == '%' {
+                                let hex: String = chars.by_ref().take(2).collect();
+                                if let Ok(byte) = u8::from_str_radix(&hex, 16) {
+                                    result.push(byte as char);
+                                } else {
+                                    result.push('%');
+                                    result.push_str(&hex);
+                                }
+                            } else if c == '+' { result.push(' '); }
+                            else { result.push(c); }
+                        }
+                        Ok(Value::String(result))
+                    }
+                    _ => Err(anyhow::anyhow!("url_розкодувати очікує рядок")),
+                }
             }
 
             // ── Оптимізація та профілювання ──
