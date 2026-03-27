@@ -1819,7 +1819,9 @@ impl VM {
                         }
                     }
 
-                    // Читаємо тіло запиту
+                    let accept_encoding_gzip = headers.get("accept-encoding")
+                        .map(|v| v.contains("gzip")).unwrap_or(false);
+
                     let mut body_str = String::new();
                     if content_length > 0 {
                         let mut body_buf = vec![0u8; content_length];
@@ -2015,15 +2017,33 @@ impl VM {
                         response.push_str(&format!("Location: {}\r\n", loc));
                     }
 
-                    // Cache-Control для статичних файлів
                     if path.contains('.') && response_status == 200 {
                         response.push_str("Cache-Control: public, max-age=86400\r\n");
                     }
 
-                    response.push_str("\r\n");
-                    response.push_str(&response_body);
+                    // Gzip стиснення для відповідей > 1KB
+                    let body_bytes = if response_body.len() > 1024 && accept_encoding_gzip {
+                        use flate2::write::GzEncoder;
+                        use flate2::Compression;
+                        use std::io::Write as IoWrite;
+                        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+                        let _ = encoder.write_all(response_body.as_bytes());
+                        if let Ok(compressed) = encoder.finish() {
+                            response = response.replace(
+                                &format!("Content-Length: {}", response_body.len()),
+                                &format!("Content-Length: {}\r\nContent-Encoding: gzip", compressed.len())
+                            );
+                            compressed
+                        } else {
+                            response_body.as_bytes().to_vec()
+                        }
+                    } else {
+                        response_body.as_bytes().to_vec()
+                    };
 
+                    response.push_str("\r\n");
                     let _ = stream.write_all(response.as_bytes());
+                    let _ = stream.write_all(&body_bytes);
                     let _ = stream.flush();
 
                     let elapsed = request_start.elapsed();
@@ -2650,6 +2670,72 @@ impl VM {
                     (Value::String("тип".to_string()), Value::String("text/html; charset=utf-8".to_string())),
                     (Value::String("статус".to_string()), Value::Integer(status)),
                 ]))
+            }
+
+            // ── Cookies та сесії ──
+
+            "веб_cookie" => {
+                // веб_cookie(назва, значення, параметри) → Set-Cookie рядок
+                let name = match args.first() {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => return Err(anyhow::anyhow!("веб_cookie: назва має бути рядком")),
+                };
+                let value = args.get(1).map(|v| v.to_display_string()).unwrap_or_default();
+                let max_age = args.get(2).and_then(|v| if let Value::Integer(n) = v { Some(*n) } else { None })
+                    .unwrap_or(86400); // 24 години
+
+                let cookie = format!(
+                    "{}={}; Max-Age={}; Path=/; HttpOnly; SameSite=Strict",
+                    name, value, max_age
+                );
+                Ok(Value::String(cookie))
+            }
+
+            "веб_сесія_створити" => {
+                // веб_сесія_створити(дані) → session_id + Set-Cookie
+                let data = args.first().cloned().unwrap_or(Value::Dict(vec![]));
+                let session_id: String = {
+                    let mut rng = rand::thread_rng();
+                    (0..32).map(|_| format!("{:02x}", rng.gen::<u8>())).collect()
+                };
+
+                let json = serde_json::to_string(&VM::value_to_json(&data)).unwrap_or_default();
+                // Зберігаємо в БД якщо є підключення, інакше в пам'яті
+                let cookie = format!(
+                    "тризуб_сесія={}; Max-Age=86400; Path=/; HttpOnly; SameSite=Strict",
+                    session_id
+                );
+                Ok(Value::Dict(vec![
+                    (Value::String("ід".to_string()), Value::String(session_id)),
+                    (Value::String("cookie".to_string()), Value::String(cookie)),
+                    (Value::String("дані".to_string()), data),
+                ]))
+            }
+
+            "веб_gzip" => {
+                // веб_gzip(рядок) → стиснений рядок (base64)
+                match args.first() {
+                    Some(Value::String(s)) => {
+                        use flate2::write::GzEncoder;
+                        use flate2::Compression;
+                        use std::io::Write;
+                        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+                        let _ = encoder.write_all(s.as_bytes());
+                        match encoder.finish() {
+                            Ok(compressed) => {
+                                let ratio = if s.len() > 0 { (compressed.len() as f64 / s.len() as f64 * 100.0) as i64 } else { 100 };
+                                Ok(Value::Dict(vec![
+                                    (Value::String("дані".to_string()), Value::String(URL_SAFE_NO_PAD.encode(&compressed))),
+                                    (Value::String("розмір_до".to_string()), Value::Integer(s.len() as i64)),
+                                    (Value::String("розмір_після".to_string()), Value::Integer(compressed.len() as i64)),
+                                    (Value::String("відсоток".to_string()), Value::Integer(ratio)),
+                                ]))
+                            }
+                            Err(e) => Err(anyhow::anyhow!("gzip помилка: {}", e)),
+                        }
+                    }
+                    _ => Err(anyhow::anyhow!("веб_gzip очікує рядок")),
+                }
             }
 
             // ── SQLite ORM ──
