@@ -1859,12 +1859,14 @@ impl VM {
                     let method = parts[0];
                     let full_path = parts[1];
 
-                    // Розділяємо шлях та query string
-                    let (path, query_string) = if let Some(idx) = full_path.find('?') {
+                    let (raw_path, query_string) = if let Some(idx) = full_path.find('?') {
                         (&full_path[..idx], Some(&full_path[idx+1..]))
                     } else {
                         (full_path, None)
                     };
+                    // URL decode для кирилиці
+                    let decoded_path = Self::url_decode_path(raw_path);
+                    let path = decoded_path.as_str();
 
                     // Читаємо заголовки
                     let mut headers = HashMap::new();
@@ -2135,6 +2137,26 @@ impl VM {
             }
         }
         result
+    }
+
+    fn url_decode_path(input: &str) -> String {
+        let mut result = Vec::new();
+        let bytes = input.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'%' && i + 2 < bytes.len() {
+                if let Ok(byte) = u8::from_str_radix(
+                    &String::from_utf8_lossy(&bytes[i+1..i+3]), 16
+                ) {
+                    result.push(byte);
+                    i += 3;
+                    continue;
+                }
+            }
+            result.push(bytes[i]);
+            i += 1;
+        }
+        String::from_utf8(result).unwrap_or_else(|_| input.to_string())
     }
 
     fn guess_mime(path: &str) -> String {
@@ -2522,11 +2544,7 @@ impl VM {
                 match args.first() {
                     Some(Value::String(path)) => {
                         match std::fs::read_to_string(path) {
-                            Ok(content) => Ok(Value::EnumVariant {
-                                type_name: "Результат".to_string(),
-                                variant: "Успіх".to_string(),
-                                fields: vec![Value::String(content)],
-                            }),
+                            Ok(content) => Ok(Value::String(content)),
                             Err(e) => Ok(Value::EnumVariant {
                                 type_name: "Результат".to_string(),
                                 variant: "Помилка".to_string(),
