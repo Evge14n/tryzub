@@ -1,7 +1,7 @@
 pub mod bytecode;
 pub mod compiler;
 
-// Тризуб VM v4.5
+// Тризуб VM v4.6
 
 use anyhow::Result;
 use std::collections::HashMap;
@@ -506,6 +506,15 @@ impl VM {
             scope.set("очистити_кеш".to_string(), Value::BuiltinFn("очистити_кеш".to_string()));
             scope.set("статистика_vm".to_string(), Value::BuiltinFn("статистика_vm".to_string()));
             scope.set("бенчмарк_вбудований".to_string(), Value::BuiltinFn("бенчмарк_вбудований".to_string()));
+
+            // Regex
+            scope.set("regex_відповідає".to_string(), Value::BuiltinFn("regex_відповідає".to_string()));
+            scope.set("regex_знайти".to_string(), Value::BuiltinFn("regex_знайти".to_string()));
+            scope.set("regex_замінити".to_string(), Value::BuiltinFn("regex_замінити".to_string()));
+
+            // HTTP клієнт
+            scope.set("http_отримати".to_string(), Value::BuiltinFn("http_отримати".to_string()));
+            scope.set("http_надіслати".to_string(), Value::BuiltinFn("http_надіслати".to_string()));
 
             // Вбудовані конструктори Опція/Результат
             scope.set("Деякий".to_string(), Value::BuiltinFn("Деякий".to_string()));
@@ -3322,6 +3331,105 @@ impl VM {
             }
             "множина" => {
                 Ok(Value::Set(args))
+            }
+
+            // ── Регулярні вирази ──
+
+            "regex_відповідає" => {
+                if args.len() >= 2 {
+                    if let (Value::String(pattern), Value::String(text)) = (&args[0], &args[1]) {
+                        match regex::Regex::new(pattern) {
+                            Ok(re) => Ok(Value::Bool(re.is_match(text))),
+                            Err(e) => Err(anyhow::anyhow!("Невалідний regex: {}", e)),
+                        }
+                    } else { Err(anyhow::anyhow!("regex_відповідає очікує (шаблон, текст)")) }
+                } else { Err(anyhow::anyhow!("regex_відповідає очікує 2 аргументи")) }
+            }
+
+            "regex_знайти" => {
+                if args.len() >= 2 {
+                    if let (Value::String(pattern), Value::String(text)) = (&args[0], &args[1]) {
+                        match regex::Regex::new(pattern) {
+                            Ok(re) => {
+                                let matches: Vec<Value> = re.find_iter(text)
+                                    .map(|m| Value::String(m.as_str().to_string()))
+                                    .collect();
+                                Ok(Value::Array(matches))
+                            }
+                            Err(e) => Err(anyhow::anyhow!("Невалідний regex: {}", e)),
+                        }
+                    } else { Err(anyhow::anyhow!("regex_знайти очікує (шаблон, текст)")) }
+                } else { Err(anyhow::anyhow!("regex_знайти очікує 2 аргументи")) }
+            }
+
+            "regex_замінити" => {
+                if args.len() >= 3 {
+                    if let (Value::String(pattern), Value::String(text), Value::String(replacement)) = (&args[0], &args[1], &args[2]) {
+                        match regex::Regex::new(pattern) {
+                            Ok(re) => Ok(Value::String(re.replace_all(text, replacement.as_str()).to_string())),
+                            Err(e) => Err(anyhow::anyhow!("Невалідний regex: {}", e)),
+                        }
+                    } else { Err(anyhow::anyhow!("regex_замінити очікує (шаблон, текст, заміна)")) }
+                } else { Err(anyhow::anyhow!("regex_замінити очікує 3 аргументи")) }
+            }
+
+            // ── HTTP клієнт ──
+
+            "http_отримати" => {
+                match args.first() {
+                    Some(Value::String(url)) => {
+                        match ureq::get(url).call() {
+                            Ok(resp) => {
+                                let status = resp.status() as i64;
+                                let body = resp.into_string().unwrap_or_default();
+                                Ok(Value::Dict(vec![
+                                    (Value::String("статус".into()), Value::Integer(status)),
+                                    (Value::String("тіло".into()), Value::String(body)),
+                                ]))
+                            }
+                            Err(e) => {
+                                Ok(Value::Dict(vec![
+                                    (Value::String("статус".into()), Value::Integer(0)),
+                                    (Value::String("помилка".into()), Value::String(e.to_string())),
+                                ]))
+                            }
+                        }
+                    }
+                    _ => Err(anyhow::anyhow!("http_отримати очікує URL")),
+                }
+            }
+
+            "http_надіслати" => {
+                if args.len() >= 2 {
+                    if let (Value::String(url), body_val) = (&args[0], &args[1]) {
+                        let body_str = match body_val {
+                            Value::Dict(_) => serde_json::to_string(&VM::value_to_json(body_val)).unwrap_or_default(),
+                            Value::String(s) => s.clone(),
+                            _ => body_val.to_display_string(),
+                        };
+                        let content_type = if matches!(body_val, Value::Dict(_)) {
+                            "application/json"
+                        } else {
+                            "text/plain"
+                        };
+                        match ureq::post(url).set("Content-Type", content_type).send_string(&body_str) {
+                            Ok(resp) => {
+                                let status = resp.status() as i64;
+                                let resp_body = resp.into_string().unwrap_or_default();
+                                Ok(Value::Dict(vec![
+                                    (Value::String("статус".into()), Value::Integer(status)),
+                                    (Value::String("тіло".into()), Value::String(resp_body)),
+                                ]))
+                            }
+                            Err(e) => {
+                                Ok(Value::Dict(vec![
+                                    (Value::String("статус".into()), Value::Integer(0)),
+                                    (Value::String("помилка".into()), Value::String(e.to_string())),
+                                ]))
+                            }
+                        }
+                    } else { Err(anyhow::anyhow!("http_надіслати очікує (URL, тіло)")) }
+                } else { Err(anyhow::anyhow!("http_надіслати очікує 2 аргументи")) }
             }
 
             // ── Оптимізація та профілювання ──
