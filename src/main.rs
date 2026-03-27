@@ -11,7 +11,7 @@ use std::fs;
 #[derive(Parser)]
 #[command(name = "tryzub")]
 #[command(author = "******* <*******>")]
-#[command(version = "4.8.0")]
+#[command(version = "4.9.0")]
 #[command(about = "Тризуб — сучасна українська мова програмування ")]
 struct Cli {
     #[command(subcommand)]
@@ -165,7 +165,7 @@ fn main() {
         }
         Commands::Profile { file } => profile_file(file),
         Commands::Version => {
-            println!("Тризуб v4.8.0");
+            println!("Тризуб v4.9.0");
             println!("Ліцензія: MIT");
             println!("https://github.com/Evge14n/tryzub");
             Ok(())
@@ -373,7 +373,7 @@ fn run_tests(file: PathBuf) -> Result<()> {
 fn run_repl() -> Result<()> {
     use std::io::{self, Write, BufRead};
 
-    println!("Тризуб v4.8.0 — Інтерактивний режим");
+    println!("Тризуб v4.9.0 — Інтерактивний режим");
     println!("Введіть вираз або інструкцію. :вихід для виходу.");
     println!("Команди: :тип <вираз>, :допомога");
     println!();
@@ -520,7 +520,7 @@ fn create_project(name: String) -> Result<()> {
     fs::create_dir(format!("{}/src", name))?;
 
     let main_content = format!(r#"// Проект: {}
-// Створено за допомогою мови Тризуб v4.8.0
+// Створено за допомогою мови Тризуб v4.9.0
 
 функція головна() {{
     друк("Привіт з проекту {}! 🇺🇦")

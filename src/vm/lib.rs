@@ -1,7 +1,7 @@
 pub mod bytecode;
 pub mod compiler;
 
-// Тризуб VM v4.8
+// Тризуб VM v4.9
 
 use anyhow::Result;
 use std::collections::HashMap;
@@ -540,6 +540,20 @@ impl VM {
             scope.set("dns_запит".to_string(), Value::BuiltinFn("dns_запит".to_string()));
             scope.set("url_кодувати".to_string(), Value::BuiltinFn("url_кодувати".to_string()));
             scope.set("url_розкодувати".to_string(), Value::BuiltinFn("url_розкодувати".to_string()));
+
+            // Розширена кібербезпека
+            scope.set("фазити".to_string(), Value::BuiltinFn("фазити".to_string()));
+            scope.set("аудит_рядок".to_string(), Value::BuiltinFn("аудит_рядок".to_string()));
+            scope.set("блокчейн_хеш".to_string(), Value::BuiltinFn("блокчейн_хеш".to_string()));
+            scope.set("merkle_дерево".to_string(), Value::BuiltinFn("merkle_дерево".to_string()));
+            scope.set("стего_приховати".to_string(), Value::BuiltinFn("стего_приховати".to_string()));
+            scope.set("стего_дістати".to_string(), Value::BuiltinFn("стего_дістати".to_string()));
+            scope.set("xor_шифр".to_string(), Value::BuiltinFn("xor_шифр".to_string()));
+            scope.set("rot13".to_string(), Value::BuiltinFn("rot13".to_string()));
+            scope.set("ентропія".to_string(), Value::BuiltinFn("ентропія".to_string()));
+            scope.set("перевірити_пароль".to_string(), Value::BuiltinFn("перевірити_пароль".to_string()));
+            scope.set("хонейпот".to_string(), Value::BuiltinFn("хонейпот".to_string()));
+            scope.set("часова_мітка".to_string(), Value::BuiltinFn("часова_мітка".to_string()));
 
             // Вбудовані конструктори Опція/Результат
             scope.set("Деякий".to_string(), Value::BuiltinFn("Деякий".to_string()));
@@ -3785,6 +3799,328 @@ impl VM {
                     }
                     _ => Err(anyhow::anyhow!("url_розкодувати очікує рядок")),
                 }
+            }
+
+            // ── Розширена кібербезпека ──
+
+            "фазити" => {
+                // фазити(функція, кількість) → тестує функцію випадковими даними
+                if args.len() >= 2 {
+                    let func = args[0].clone();
+                    let count = match &args[1] { Value::Integer(n) => *n as u64, _ => 1000 };
+                    let mut rng = rand::thread_rng();
+                    let mut crashes = Vec::new();
+                    let mut tested = 0u64;
+
+                    for i in 0..count {
+                        let test_input = match rng.gen_range(0..5) {
+                            0 => Value::Integer(rng.gen_range(-1000000..1000000)),
+                            1 => Value::Float(rng.gen::<f64>() * 1000.0 - 500.0),
+                            2 => Value::String(String::new()),
+                            3 => Value::Null,
+                            _ => Value::String((0..rng.gen_range(1..100)).map(|_| rng.gen::<char>()).collect()),
+                        };
+                        match self.call_value(func.clone(), vec![test_input.clone()]) {
+                            Err(e) => {
+                                crashes.push(Value::Dict(vec![
+                                    (Value::String("вхід".into()), test_input),
+                                    (Value::String("помилка".into()), Value::String(e.to_string())),
+                                    (Value::String("ітерація".into()), Value::Integer(i as i64)),
+                                ]));
+                                if crashes.len() >= 10 { break; }
+                            }
+                            Ok(_) => {}
+                        }
+                        tested += 1;
+                    }
+
+                    Ok(Value::Dict(vec![
+                        (Value::String("тестовано".into()), Value::Integer(tested as i64)),
+                        (Value::String("падінь".into()), Value::Integer(crashes.len() as i64)),
+                        (Value::String("деталі".into()), Value::Array(crashes)),
+                    ]))
+                } else { Err(anyhow::anyhow!("фазити(функція, кількість)")) }
+            }
+
+            "аудит_рядок" => {
+                // аудит_рядок(рядок) → перевіряє на типові вразливості
+                match args.first() {
+                    Some(Value::String(s)) => {
+                        let mut issues = Vec::new();
+                        if s.contains("<script") || s.contains("javascript:") || s.contains("onerror=") {
+                            issues.push(Value::String("XSS: знайдено потенційний скрипт".into()));
+                        }
+                        if s.contains("' OR ") || s.contains("'; DROP") || s.contains("1=1") || s.contains("UNION SELECT") {
+                            issues.push(Value::String("SQL Injection: знайдено підозрілий SQL".into()));
+                        }
+                        if s.contains("../") || s.contains("..\\") {
+                            issues.push(Value::String("Path Traversal: знайдено обхід шляху".into()));
+                        }
+                        if s.contains('\0') {
+                            issues.push(Value::String("Null Byte Injection: знайдено нульовий байт".into()));
+                        }
+                        if s.contains("{{") || s.contains("{%") || s.contains("${") {
+                            issues.push(Value::String("Template Injection: знайдено шаблонний вираз".into()));
+                        }
+                        if regex::Regex::new(r"(?i)(cmd|powershell|bash|sh)\s*[;&|]").ok()
+                            .map_or(false, |re| re.is_match(s)) {
+                            issues.push(Value::String("Command Injection: знайдено команду оболонки".into()));
+                        }
+                        Ok(Value::Dict(vec![
+                            (Value::String("безпечно".into()), Value::Bool(issues.is_empty())),
+                            (Value::String("вразливості".into()), Value::Array(issues)),
+                        ]))
+                    }
+                    _ => Err(anyhow::anyhow!("аудит_рядок очікує рядок")),
+                }
+            }
+
+            "блокчейн_хеш" => {
+                // блокчейн_хеш(дані, попередній_хеш) → хеш блоку
+                if args.len() >= 2 {
+                    if let (Value::String(data), Value::String(prev_hash)) = (&args[0], &args[1]) {
+                        use sha2::Digest;
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+                        let block = format!("{}:{}:{}", prev_hash, data, now);
+                        let hash = format!("{:x}", sha2::Sha256::digest(block.as_bytes()));
+                        Ok(Value::Dict(vec![
+                            (Value::String("хеш".into()), Value::String(hash)),
+                            (Value::String("дані".into()), Value::String(data.clone())),
+                            (Value::String("попередній".into()), Value::String(prev_hash.clone())),
+                            (Value::String("час".into()), Value::Integer(now as i64)),
+                        ]))
+                    } else { Err(anyhow::anyhow!("блокчейн_хеш(дані, поп_хеш)")) }
+                } else { Err(anyhow::anyhow!("блокчейн_хеш очікує 2 аргументи")) }
+            }
+
+            "merkle_дерево" => {
+                // merkle_дерево(масив_даних) → кореневий хеш
+                match args.first() {
+                    Some(Value::Array(items)) => {
+                        use sha2::Digest;
+                        let mut hashes: Vec<String> = items.iter()
+                            .map(|v| format!("{:x}", sha2::Sha256::digest(v.to_display_string().as_bytes())))
+                            .collect();
+                        while hashes.len() > 1 {
+                            let mut next = Vec::new();
+                            let mut i = 0;
+                            while i < hashes.len() {
+                                let left = &hashes[i];
+                                let right = if i + 1 < hashes.len() { &hashes[i + 1] } else { left };
+                                let combined = format!("{}{}", left, right);
+                                next.push(format!("{:x}", sha2::Sha256::digest(combined.as_bytes())));
+                                i += 2;
+                            }
+                            hashes = next;
+                        }
+                        Ok(Value::String(hashes.first().cloned().unwrap_or_default()))
+                    }
+                    _ => Err(anyhow::anyhow!("merkle_дерево очікує масив")),
+                }
+            }
+
+            "стего_приховати" => {
+                // стего_приховати(носій_рядок, секрет) → рядок з прихованим повідомленням (zero-width chars)
+                if args.len() >= 2 {
+                    if let (Value::String(carrier), Value::String(secret)) = (&args[0], &args[1]) {
+                        let mut result = String::new();
+                        let binary: String = secret.bytes()
+                            .map(|b| format!("{:08b}", b)).collect();
+                        let mut bit_iter = binary.chars();
+                        for ch in carrier.chars() {
+                            result.push(ch);
+                            if let Some(bit) = bit_iter.next() {
+                                result.push(if bit == '1' { '\u{200B}' } else { '\u{200C}' }); // zero-width space/non-joiner
+                            }
+                        }
+                        // Решту бітів додаємо в кінець
+                        for bit in bit_iter {
+                            result.push(if bit == '1' { '\u{200B}' } else { '\u{200C}' });
+                        }
+                        Ok(Value::String(result))
+                    } else { Err(anyhow::anyhow!("стего_приховати(носій, секрет)")) }
+                } else { Err(anyhow::anyhow!("стего_приховати очікує 2 аргументи")) }
+            }
+
+            "стего_дістати" => {
+                // стего_дістати(рядок_зі_стего) → прихований текст
+                match args.first() {
+                    Some(Value::String(s)) => {
+                        let bits: String = s.chars()
+                            .filter_map(|c| match c {
+                                '\u{200B}' => Some('1'),
+                                '\u{200C}' => Some('0'),
+                                _ => None,
+                            }).collect();
+                        let mut bytes = Vec::new();
+                        let mut i = 0;
+                        while i + 8 <= bits.len() {
+                            if let Ok(byte) = u8::from_str_radix(&bits[i..i+8], 2) {
+                                if byte == 0 { break; }
+                                bytes.push(byte);
+                            }
+                            i += 8;
+                        }
+                        Ok(Value::String(String::from_utf8_lossy(&bytes).to_string()))
+                    }
+                    _ => Err(anyhow::anyhow!("стего_дістати очікує рядок")),
+                }
+            }
+
+            "xor_шифр" => {
+                // xor_шифр(дані, ключ) → XOR шифрування/розшифрування
+                if args.len() >= 2 {
+                    if let (Value::String(data), Value::String(key)) = (&args[0], &args[1]) {
+                        if key.is_empty() { return Err(anyhow::anyhow!("Ключ не може бути порожнім")); }
+                        let key_bytes = key.as_bytes();
+                        let result: Vec<u8> = data.bytes()
+                            .enumerate()
+                            .map(|(i, b)| b ^ key_bytes[i % key_bytes.len()])
+                            .collect();
+                        Ok(Value::String(hex::encode(&result)))
+                    } else { Err(anyhow::anyhow!("xor_шифр(дані, ключ)")) }
+                } else { Err(anyhow::anyhow!("xor_шифр очікує 2 аргументи")) }
+            }
+
+            "rot13" => {
+                match args.first() {
+                    Some(Value::String(s)) => {
+                        let result: String = s.chars().map(|c| match c {
+                            'a'..='m' | 'A'..='M' => (c as u8 + 13) as char,
+                            'n'..='z' | 'N'..='Z' => (c as u8 - 13) as char,
+                            'а'..='п' | 'А'..='П' => (c as u32 + 16).try_into().unwrap_or(c),
+                            'р'..='я' | 'Р'..='Я' => (c as u32 - 16).try_into().unwrap_or(c),
+                            _ => c,
+                        }).collect();
+                        Ok(Value::String(result))
+                    }
+                    _ => Err(anyhow::anyhow!("rot13 очікує рядок")),
+                }
+            }
+
+            "ентропія" => {
+                // ентропія(рядок) → біти ентропії (міра випадковості)
+                match args.first() {
+                    Some(Value::String(s)) => {
+                        if s.is_empty() { return Ok(Value::Float(0.0)); }
+                        let mut freq = HashMap::new();
+                        for c in s.chars() {
+                            *freq.entry(c).or_insert(0u64) += 1;
+                        }
+                        let len = s.len() as f64;
+                        let entropy: f64 = freq.values()
+                            .map(|&count| {
+                                let p = count as f64 / len;
+                                if p > 0.0 { -p * p.log2() } else { 0.0 }
+                            }).sum();
+                        Ok(Value::Float((entropy * 100.0).round() / 100.0))
+                    }
+                    _ => Err(anyhow::anyhow!("ентропія очікує рядок")),
+                }
+            }
+
+            "перевірити_пароль" => {
+                // перевірити_пароль(пароль) → оцінка сили + рекомендації
+                match args.first() {
+                    Some(Value::String(password)) => {
+                        let len = password.len();
+                        let has_upper = password.chars().any(|c| c.is_uppercase());
+                        let has_lower = password.chars().any(|c| c.is_lowercase());
+                        let has_digit = password.chars().any(|c| c.is_ascii_digit());
+                        let has_special = password.chars().any(|c| !c.is_alphanumeric());
+                        let has_cyrillic = password.chars().any(|c| c >= 'а' && c <= 'я' || c >= 'А' && c <= 'Я');
+
+                        let mut score = 0i64;
+                        if len >= 8 { score += 1; }
+                        if len >= 12 { score += 1; }
+                        if len >= 16 { score += 1; }
+                        if has_upper { score += 1; }
+                        if has_lower { score += 1; }
+                        if has_digit { score += 1; }
+                        if has_special { score += 2; }
+                        if has_cyrillic { score += 2; }
+
+                        let mut recommendations = Vec::new();
+                        if len < 8 { recommendations.push(Value::String("Мінімум 8 символів".into())); }
+                        if !has_upper { recommendations.push(Value::String("Додайте великі літери".into())); }
+                        if !has_digit { recommendations.push(Value::String("Додайте цифри".into())); }
+                        if !has_special { recommendations.push(Value::String("Додайте спецсимволи (!@#$)".into())); }
+
+                        let common = ["password", "123456", "qwerty", "admin", "пароль", "123456789"];
+                        let is_common = common.iter().any(|&p| password.to_lowercase().contains(p));
+                        if is_common { score = 0; recommendations.push(Value::String("Пароль занадто поширений!".into())); }
+
+                        let strength = match score {
+                            0..=2 => "слабкий",
+                            3..=5 => "середній",
+                            6..=7 => "сильний",
+                            _ => "дуже сильний",
+                        };
+
+                        Ok(Value::Dict(vec![
+                            (Value::String("сила".into()), Value::String(strength.into())),
+                            (Value::String("оцінка".into()), Value::Integer(score)),
+                            (Value::String("довжина".into()), Value::Integer(len as i64)),
+                            (Value::String("кирилиця".into()), Value::Bool(has_cyrillic)),
+                            (Value::String("рекомендації".into()), Value::Array(recommendations)),
+                        ]))
+                    }
+                    _ => Err(anyhow::anyhow!("перевірити_пароль очікує рядок")),
+                }
+            }
+
+            "хонейпот" => {
+                // хонейпот(порт) → запускає пастку-сервер що логує всі з'єднання
+                match args.first() {
+                    Some(Value::Integer(port)) => {
+                        let addr = format!("0.0.0.0:{}", port);
+                        println!("\n  🍯 Хонейпот запущено на порті {}", port);
+                        println!("  Логую всі з'єднання... (Ctrl+C для зупинки)\n");
+                        match std::net::TcpListener::bind(&addr) {
+                            Ok(listener) => {
+                                listener.set_nonblocking(false).ok();
+                                let mut connections = Vec::new();
+                                for stream in listener.incoming().take(100) {
+                                    match stream {
+                                        Ok(mut s) => {
+                                            use std::io::Read;
+                                            let peer = s.peer_addr().map(|a| a.to_string()).unwrap_or_default();
+                                            let now = std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+                                            let mut buf = [0u8; 4096];
+                                            s.set_read_timeout(Some(std::time::Duration::from_secs(2))).ok();
+                                            let data = match s.read(&mut buf) {
+                                                Ok(n) => String::from_utf8_lossy(&buf[..n]).to_string(),
+                                                Err(_) => String::new(),
+                                            };
+                                            println!("  [{}] З'єднання від {} ({} байт)", now, peer, data.len());
+                                            connections.push(Value::Dict(vec![
+                                                (Value::String("ip".into()), Value::String(peer)),
+                                                (Value::String("час".into()), Value::Integer(now as i64)),
+                                                (Value::String("дані".into()), Value::String(data.chars().take(500).collect())),
+                                            ]));
+                                            // Відповідаємо фейковим банером
+                                            use std::io::Write;
+                                            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nServer: Apache/2.4.41\r\n\r\n<html><body>Welcome</body></html>");
+                                        }
+                                        Err(_) => break,
+                                    }
+                                }
+                                Ok(Value::Array(connections))
+                            }
+                            Err(e) => Err(anyhow::anyhow!("Хонейпот: {}", e)),
+                        }
+                    }
+                    _ => Err(anyhow::anyhow!("хонейпот очікує порт")),
+                }
+            }
+
+            "часова_мітка" => {
+                // часова_мітка() → Unix timestamp
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+                Ok(Value::Integer(now as i64))
             }
 
             // ── Оптимізація та профілювання ──
