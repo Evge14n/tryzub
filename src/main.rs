@@ -94,6 +94,18 @@ enum Commands {
         file: PathBuf,
     },
 
+    /// Компілювати в standalone виконуваний файл
+    #[command(name = "компілювати")]
+    Compile {
+        /// Файл для компіляції
+        #[arg(value_name = "ФАЙЛ")]
+        file: PathBuf,
+
+        /// Вихідний файл
+        #[arg(short = 'о', long = "вихід")]
+        output: Option<PathBuf>,
+    },
+
     /// Показати версію та інформацію
     #[command(name = "версія")]
     Version,
@@ -122,11 +134,32 @@ enum WebCommands {
 }
 
 fn main() {
+    // Перевірити чи це скомпільований бінарник з вбудованим скриптом
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Ok(data) = fs::read(&exe_path) {
+            let magic = b"\xd0\xa2\xd0\xa0\xd0\x98\xd0\x97";
+            if data.len() > 16 && &data[data.len()-8..] == magic {
+                let len_bytes: [u8; 8] = data[data.len()-16..data.len()-8].try_into().unwrap();
+                let source_len = u64::from_le_bytes(len_bytes) as usize;
+                let source_start = data.len() - 16 - source_len;
+                if let Ok(source) = std::str::from_utf8(&data[source_start..source_start+source_len]) {
+                    let result = run_embedded_source(source);
+                    if let Err(e) = result {
+                        eprintln!("\x1b[1;31m[X] {}\x1b[0m", e);
+                        std::process::exit(1);
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
     let cli = Cli::parse();
 
     let result = match cli.command {
         Commands::Run { file, fast, args } => run_file(file, fast, args),
         Commands::Watch { file } => watch_file(file),
+        Commands::Compile { file, output } => compile_file(file, output),
         Commands::Check { file } => check_file(file),
         Commands::Test { file } => run_tests(file),
         Commands::New { name } => create_project(name),
@@ -290,6 +323,46 @@ fn run_file(file: PathBuf, fast: bool, args: Vec<String>) -> Result<()> {
         }
         vm.execute_program(ast, args)
     }
+}
+
+fn compile_file(file: PathBuf, output: Option<PathBuf>) -> Result<()> {
+    let source = fs::read_to_string(&file)
+        .map_err(|e| anyhow::anyhow!("Не вдалося прочитати {:?}: {}", file, e))?;
+
+    // Перевірка синтаксису
+    let tokens = tryzub_lexer::tokenize(&source)?;
+    let _ast = tryzub_parser::parse(tokens)?;
+
+    let out_name = output.unwrap_or_else(|| {
+        let stem = file.file_stem().unwrap_or_default().to_string_lossy();
+        PathBuf::from(format!("{}.exe", stem))
+    });
+
+    let exe_path = std::env::current_exe()?;
+    let exe_bytes = fs::read(&exe_path)?;
+
+    // Формат: [tryzub.exe байти][source байти][source_len як u64 LE][magic "ТРИЗУБ\0\0"]
+    let magic = b"\xd0\xa2\xd0\xa0\xd0\x98\xd0\x97"; // "ТРИЗ" UTF-8
+    let source_bytes = source.as_bytes();
+    let source_len = source_bytes.len() as u64;
+
+    let mut output_bytes = exe_bytes;
+    output_bytes.extend_from_slice(source_bytes);
+    output_bytes.extend_from_slice(&source_len.to_le_bytes());
+    output_bytes.extend_from_slice(magic);
+
+    fs::write(&out_name, &output_bytes)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&out_name, fs::Permissions::from_mode(0o755))?;
+    }
+
+    let size_mb = output_bytes.len() as f64 / 1024.0 / 1024.0;
+    println!("Скомпільовано: {} ({:.1} MB)", out_name.display(), size_mb);
+    println!("Запустити: ./{}", out_name.display());
+    Ok(())
 }
 
 fn watch_file(file: PathBuf) -> Result<()> {
@@ -647,6 +720,13 @@ fn run_repl() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn run_embedded_source(source: &str) -> Result<()> {
+    let tokens = tryzub_lexer::tokenize(source)?;
+    let ast = tryzub_parser::parse(tokens)?;
+    let mut vm = tryzub_vm::VM::new();
+    vm.execute_program(ast, std::env::args().skip(1).collect())
 }
 
 fn run_source(source: &str) -> Result<()> {
