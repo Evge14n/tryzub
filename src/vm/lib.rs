@@ -1,7 +1,7 @@
 pub mod bytecode;
 pub mod compiler;
 
-// Тризуб VM v5.2.2
+// Тризуб VM v5.3.2
 
 use anyhow::Result;
 use std::collections::HashMap;
@@ -581,6 +581,11 @@ impl VM {
             for name in &["зображення_розмір", "зображення_змінити_розмір", "зображення_обрізати",
                 "зображення_мініатюра", "зображення_формат", "зображення_сірий",
                 "зображення_повернути", "зображення_відзеркалити", "зображення_в_тензор"] {
+                scope.set(name.to_string(), Value::BuiltinFn(name.to_string()));
+            }
+
+            // Subprocess / Python ML
+            for name in &["виконати_команду", "пітон", "пітон_файл", "мл_ембединг"] {
                 scope.set(name.to_string(), Value::BuiltinFn(name.to_string()));
             }
 
@@ -4914,6 +4919,110 @@ impl VM {
                     Value::Integer(3), Value::Integer(height as i64), Value::Integer(width as i64)
                 ])));
                 Ok(Value::Dict(result))
+            }
+
+            // ── Subprocess / Python / ML ──
+            "виконати_команду" => {
+                let cmd = match &args[0] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("Expected command string")) };
+                let cmd_args: Vec<String> = args.iter().skip(1).filter_map(|a| match a { Value::String(s) => Some(s.clone()), _ => None }).collect();
+                let output = std::process::Command::new(&cmd)
+                    .args(&cmd_args)
+                    .output()
+                    .map_err(|e| anyhow::anyhow!("Command failed: {}", e))?;
+                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                let mut result = Vec::new();
+                result.push((Value::String("вивід".to_string()), Value::String(stdout.trim().to_string())));
+                result.push((Value::String("помилки".to_string()), Value::String(stderr.trim().to_string())));
+                result.push((Value::String("код".to_string()), Value::Integer(output.status.code().unwrap_or(-1) as i64)));
+                Ok(Value::Dict(result))
+            }
+            "пітон" => {
+                let script = match &args[0] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("Expected Python script")) };
+                let py_cmd = if cfg!(windows) { "python" } else { "python3" };
+                let output = std::process::Command::new(py_cmd)
+                    .args(&["-c", &script])
+                    .output()
+                    .map_err(|e| anyhow::anyhow!("Python not found: {}", e))?;
+                let stdout = String::from_utf8_lossy(&output.stdout).to_string().trim().to_string();
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                    return Err(anyhow::anyhow!("Python error: {}", stderr.trim()));
+                }
+                if stdout.starts_with('{') || stdout.starts_with('[') {
+                    match serde_json::from_str::<serde_json::Value>(&stdout) {
+                        Ok(v) => Ok(VM::json_to_value(&v)),
+                        Err(_) => Ok(Value::String(stdout)),
+                    }
+                } else if let Ok(n) = stdout.parse::<i64>() {
+                    Ok(Value::Integer(n))
+                } else if let Ok(f) = stdout.parse::<f64>() {
+                    Ok(Value::Float(f))
+                } else {
+                    Ok(Value::String(stdout))
+                }
+            }
+            "пітон_файл" => {
+                let path = match &args[0] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("Expected file path")) };
+                let extra_args: Vec<String> = args.iter().skip(1).filter_map(|a| match a { Value::String(s) => Some(s.clone()), Value::Integer(n) => Some(n.to_string()), Value::Float(f) => Some(f.to_string()), _ => None }).collect();
+                let py_cmd = if cfg!(windows) { "python" } else { "python3" };
+                let output = std::process::Command::new(py_cmd)
+                    .arg(&path)
+                    .args(&extra_args)
+                    .output()
+                    .map_err(|e| anyhow::anyhow!("Python not found: {}", e))?;
+                let stdout = String::from_utf8_lossy(&output.stdout).to_string().trim().to_string();
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                    return Err(anyhow::anyhow!("Python error: {}", stderr.trim()));
+                }
+                if stdout.starts_with('{') || stdout.starts_with('[') {
+                    match serde_json::from_str::<serde_json::Value>(&stdout) {
+                        Ok(v) => Ok(VM::json_to_value(&v)),
+                        Err(_) => Ok(Value::String(stdout)),
+                    }
+                } else {
+                    Ok(Value::String(stdout))
+                }
+            }
+            "мл_ембединг" => {
+                let image_path = match &args[0] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("Expected image path")) };
+                let model = match args.get(1) { Some(Value::String(s)) => s.clone(), _ => "clip".to_string() };
+                let py_cmd = if cfg!(windows) { "python" } else { "python3" };
+                let script = format!(r#"
+import json, sys
+try:
+    if '{}' == 'clip':
+        from sentence_transformers import SentenceTransformer
+        from PIL import Image
+        model = SentenceTransformer('clip-ViT-B-32')
+        img = Image.open('{}')
+        emb = model.encode(img).tolist()
+        print(json.dumps(emb))
+    else:
+        print(json.dumps([0.0]*512))
+except Exception as e:
+    print(json.dumps({{"error": str(e)}}))
+"#, model, image_path.replace('\\', "\\\\"));
+                let output = std::process::Command::new(py_cmd)
+                    .args(&["-c", &script])
+                    .output()
+                    .map_err(|e| anyhow::anyhow!("Python/CLIP not found: {}", e))?;
+                let stdout = String::from_utf8_lossy(&output.stdout).to_string().trim().to_string();
+                match serde_json::from_str::<serde_json::Value>(&stdout) {
+                    Ok(serde_json::Value::Array(arr)) => {
+                        let vec: Vec<Value> = arr.iter().filter_map(|v| v.as_f64().map(Value::Float)).collect();
+                        Ok(Value::Array(vec))
+                    }
+                    Ok(serde_json::Value::Object(obj)) => {
+                        if let Some(err) = obj.get("error") {
+                            Err(anyhow::anyhow!("CLIP error: {}", err))
+                        } else {
+                            Ok(Value::String(stdout))
+                        }
+                    }
+                    _ => Err(anyhow::anyhow!("Unexpected CLIP output")),
+                }
             }
 
             // ── Макроси ──
