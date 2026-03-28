@@ -27,6 +27,10 @@ enum Commands {
         #[arg(value_name = "ФАЙЛ")]
         file: PathBuf,
 
+        /// Bytecode VM (швидше, обмежений набір операцій)
+        #[arg(long = "швидко", default_value = "false")]
+        fast: bool,
+
         /// Аргументи програми
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
@@ -82,6 +86,14 @@ enum Commands {
         file: PathBuf,
     },
 
+    /// Hot reload — перезапуск при зміні файлу
+    #[command(name = "спостерігати")]
+    Watch {
+        /// Файл для спостереження
+        #[arg(value_name = "ФАЙЛ")]
+        file: PathBuf,
+    },
+
     /// Показати версію та інформацію
     #[command(name = "версія")]
     Version,
@@ -113,14 +125,15 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Commands::Run { file, args } => run_file(file, args),
+        Commands::Run { file, fast, args } => run_file(file, fast, args),
+        Commands::Watch { file } => watch_file(file),
         Commands::Check { file } => check_file(file),
         Commands::Test { file } => run_tests(file),
         Commands::New { name } => create_project(name),
         Commands::Repl => run_repl(),
         Commands::Web { action } => match action {
             WebCommands::New { name } => create_web_project(name),
-            WebCommands::Run { file, port } => run_file(file, vec![port.to_string()]),
+            WebCommands::Run { file, port } => run_file(file, false, vec![port.to_string()]),
         },
         Commands::Benchmark { iterations } => {
             println!("\nТризуб VM — Бенчмарк швидкості\n");
@@ -173,9 +186,39 @@ fn main() {
     };
 
     if let Err(e) = result {
-        eprintln!("[X] {}", e);
+        eprintln!("\x1b[1;31m[X] {}\x1b[0m", e);
         std::process::exit(1);
     }
+}
+
+fn format_error_with_source(source: &str, file: &std::path::Path, error: &str) -> String {
+    let line_num = extract_line_number(error);
+    if line_num == 0 {
+        return format!("{}", error);
+    }
+    let lines: Vec<&str> = source.lines().collect();
+    let mut out = String::new();
+    out.push_str(&format!("\x1b[1;31mПомилка\x1b[0m: {}\n", error));
+    out.push_str(&format!(" \x1b[36m-->\x1b[0m {}:{}\n", file.display(), line_num));
+    out.push_str("  \x1b[36m|\x1b[0m\n");
+    let start = if line_num > 2 { line_num - 2 } else { 0 };
+    let end = std::cmp::min(line_num + 1, lines.len());
+    for i in start..end {
+        let marker = if i + 1 == line_num { "\x1b[1;31m>\x1b[0m" } else { " " };
+        let num_color = if i + 1 == line_num { "\x1b[1;31m" } else { "\x1b[36m" };
+        out.push_str(&format!("{} {}{:>4}\x1b[0m \x1b[36m|\x1b[0m {}\n", marker, num_color, i + 1, lines[i]));
+    }
+    out.push_str("  \x1b[36m|\x1b[0m\n");
+    out
+}
+
+fn extract_line_number(error: &str) -> usize {
+    if let Some(pos) = error.rfind("рядку ") {
+        let after = &error[pos + "рядку ".len()..];
+        let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        return num_str.parse().unwrap_or(0);
+    }
+    0
 }
 
 fn profile_file(file: PathBuf) -> Result<()> {
@@ -203,7 +246,7 @@ fn profile_file(file: PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn run_file(file: PathBuf, args: Vec<String>) -> Result<()> {
+fn run_file(file: PathBuf, fast: bool, args: Vec<String>) -> Result<()> {
     let source = fs::read_to_string(&file)
         .map_err(|e| anyhow::anyhow!("Не вдалося прочитати файл {:?}: {}", file, e))?;
 
@@ -218,17 +261,80 @@ fn run_file(file: PathBuf, args: Vec<String>) -> Result<()> {
         format!("функція головна() {{\n{}\n}}", source)
     };
 
-    let tokens = tryzub_lexer::tokenize(&effective_source)
-        .map_err(|e| anyhow::anyhow!("Помилка лексичного аналізу: {}", e))?;
+    let tokens = match tryzub_lexer::tokenize(&effective_source) {
+        Ok(t) => t,
+        Err(e) => {
+            eprint!("{}", format_error_with_source(&source, &file, &e.to_string()));
+            std::process::exit(1);
+        }
+    };
 
-    let ast = tryzub_parser::parse(tokens)
-        .map_err(|e| anyhow::anyhow!("Помилка синтаксичного аналізу: {}", e))?;
+    let ast = match tryzub_parser::parse(tokens) {
+        Ok(a) => a,
+        Err(e) => {
+            eprint!("{}", format_error_with_source(&source, &file, &e.to_string()));
+            std::process::exit(1);
+        }
+    };
 
-    let mut vm = tryzub_vm::VM::new();
-    if let Some(parent) = file.parent() {
-        vm.add_module_path(parent.to_string_lossy().to_string());
+    if fast {
+        let compiler = tryzub_vm::compiler::Compiler::new();
+        let chunk = compiler.compile_program(&ast);
+        let mut bc_vm = tryzub_vm::bytecode::BytecodeVM::new(chunk.local_count);
+        bc_vm.execute(&chunk);
+        Ok(())
+    } else {
+        let mut vm = tryzub_vm::VM::new();
+        if let Some(parent) = file.parent() {
+            vm.add_module_path(parent.to_string_lossy().to_string());
+        }
+        vm.execute_program(ast, args)
     }
-    vm.execute_program(ast, args)
+}
+
+fn watch_file(file: PathBuf) -> Result<()> {
+    use notify::{Watcher, RecursiveMode, Config};
+    use std::sync::mpsc;
+
+    let (tx, rx) = mpsc::channel();
+    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if let Ok(event) = res {
+            if event.kind.is_modify() {
+                let _ = tx.send(());
+            }
+        }
+    })?;
+
+    let watch_dir = file.parent().unwrap_or(std::path::Path::new("."));
+    watcher.watch(watch_dir, RecursiveMode::Recursive)?;
+
+    println!("\x1b[36m👁 Спостерігаю за {:?}\x1b[0m", file);
+    println!("   Зміни автоматично перезапустять програму\n");
+
+    loop {
+        print!("\x1b[33m▶ Запуск...\x1b[0m\n");
+        let start = std::time::Instant::now();
+        match run_file(file.clone(), false, vec![]) {
+            Ok(_) => {
+                let elapsed = start.elapsed();
+                println!("\x1b[32m✓ Виконано за {:.1}мс\x1b[0m", elapsed.as_secs_f64() * 1000.0);
+            }
+            Err(e) => {
+                eprintln!("\x1b[31m✗ {}\x1b[0m", e);
+            }
+        }
+        println!("\x1b[36m  Чекаю на зміни...\x1b[0m\n");
+
+        // Drain any pending events
+        while rx.try_recv().is_ok() {}
+        // Wait for next change
+        let _ = rx.recv();
+        // Small debounce
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        while rx.try_recv().is_ok() {}
+
+        print!("\x1b[2J\x1b[H"); // clear screen
+    }
 }
 
 fn check_file(file: PathBuf) -> Result<()> {
