@@ -591,7 +591,8 @@ impl VM {
                 "веб_сесія_зберегти", "веб_сесія_отримати", "веб_сесія_видалити", "веб_зберегти_файл",
                 "бд_відкрити", "бд_створити_таблицю", "бд_створити", "бд_знайти",
                 "бд_всі", "бд_запит", "бд_оновити", "бд_видалити", "бд_кількість", "бд_sql",
-                "авт_хешувати", "авт_перевірити", "авт_створити_токен", "авт_перевірити_токен"] {
+                "авт_хешувати", "авт_перевірити", "авт_створити_токен", "авт_перевірити_токен",
+                "веб_csrf_перевірити"] {
                 scope.set(name.to_string(), Value::BuiltinFn(name.to_string()));
             }
 
@@ -2025,7 +2026,8 @@ impl VM {
                                     eprintln!("  [X] {} {} — {}", method, path, e);
                                     let html = format!(
                                         "<html><head><meta charset='utf-8'></head>\
-                                         <body><h1>500</h1><pre>{}</pre></body></html>", e
+                                         <body><h1>500</h1><pre>{}</pre></body></html>",
+                                        e.to_string().replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
                                     );
                                     (html, "text/html; charset=utf-8".to_string(), 500, None)
                                 }
@@ -2111,7 +2113,8 @@ impl VM {
                     );
 
                     if let Some(loc) = extra_headers {
-                        response.push_str(&format!("Location: {}\r\n", loc));
+                        let safe_loc = loc.replace('\r', "").replace('\n', "");
+                        response.push_str(&format!("Location: {}\r\n", safe_loc));
                     }
 
                     if path.contains('.') && response_status == 200 {
@@ -2769,10 +2772,11 @@ impl VM {
                     Some(Value::String(s)) => s.clone(),
                     _ => "/".to_string(),
                 };
+                let safe_url = url.replace('\r', "").replace('\n', "");
                 Ok(Value::Dict(vec![
                     (Value::String("тіло".to_string()), Value::String(String::new())),
                     (Value::String("статус".to_string()), Value::Integer(302)),
-                    (Value::String("Location".to_string()), Value::String(url)),
+                    (Value::String("Location".to_string()), Value::String(safe_url)),
                 ]))
             }
 
@@ -3099,10 +3103,12 @@ impl VM {
 
                 let where_clause = if args.len() >= 2 {
                     if let Value::Dict(pairs) = &args[1] {
+                        for (k, _) in pairs.iter() {
+                            Self::validate_sql_identifier(&k.to_display_string())?;
+                        }
                         let conditions: Vec<String> = pairs.iter().enumerate()
                             .map(|(i, (k, _))| {
                                 let col = k.to_display_string();
-                                Self::validate_sql_identifier(&col).ok();
                                 format!("{} = ?{}", col, i + 1)
                             })
                             .collect();
@@ -3311,7 +3317,7 @@ impl VM {
             // ── Автентифікація (JWT + bcrypt-подібне хешування) ──
 
             "авт_хешувати" => {
-                // PBKDF2-подібне хешування: SHA256 + random salt + 10000 ітерацій
+                // PBKDF2-подібне хешування: SHA256 + random salt + 600000 ітерацій
                 match args.first() {
                     Some(Value::String(password)) => {
                         use sha2::{Sha256, Digest};
@@ -3319,14 +3325,13 @@ impl VM {
                         let salt: [u8; 16] = rng.gen();
                         let salt_b64 = URL_SAFE_NO_PAD.encode(&salt);
 
-                        // 10000 ітерацій SHA256(salt + password + prev_hash)
                         let mut hash = {
                             let mut h = Sha256::new();
                             h.update(&salt);
                             h.update(password.as_bytes());
                             h.finalize()
                         };
-                        for _ in 0..10_000 {
+                        for _ in 0..600_000 {
                             let mut h = Sha256::new();
                             h.update(&salt);
                             h.update(password.as_bytes());
@@ -3334,7 +3339,7 @@ impl VM {
                             hash = h.finalize();
                         }
                         let hash_b64 = URL_SAFE_NO_PAD.encode(&hash);
-                        Ok(Value::String(format!("$тх2$10000${}${}", salt_b64, hash_b64)))
+                        Ok(Value::String(format!("$тх2$600000${}${}", salt_b64, hash_b64)))
                     }
                     _ => Err(anyhow::anyhow!("авт_хешувати очікує пароль (тхт)")),
                 }
@@ -3347,7 +3352,7 @@ impl VM {
                         use sha2::{Sha256, Digest};
                         let parts: Vec<&str> = stored.split('$').collect();
                         if parts.len() >= 5 && parts[1] == "тх2" {
-                            let rounds: u32 = parts[2].parse().unwrap_or(10_000);
+                            let rounds: u32 = parts[2].parse().unwrap_or(600_000);
                             let salt = URL_SAFE_NO_PAD.decode(parts[3]).unwrap_or_default();
                             let stored_hash = parts[4];
 
@@ -3443,7 +3448,17 @@ impl VM {
                         mac.update(sign_input.as_bytes());
                         let expected_sig = URL_SAFE_NO_PAD.encode(&mac.finalize().into_bytes());
 
-                        if parts[2] != expected_sig {
+                        let sig_valid = {
+                            let a = expected_sig.as_bytes();
+                            let b = parts[2].as_bytes();
+                            if a.len() != b.len() { false }
+                            else {
+                                let mut diff: u8 = 0;
+                                for (x, y) in a.iter().zip(b.iter()) { diff |= x ^ y; }
+                                diff == 0
+                            }
+                        };
+                        if !sig_valid {
                             return Ok(Value::EnumVariant {
                                 type_name: "Результат".to_string(),
                                 variant: "Помилка".to_string(),
@@ -3486,6 +3501,17 @@ impl VM {
                 } else {
                     Err(anyhow::anyhow!("авт_перевірити_токен очікує (токен)"))
                 }
+            }
+
+            "веб_csrf_перевірити" => {
+                let token1 = match &args[0] { Value::String(s) => s.as_bytes().to_vec(), _ => vec![] };
+                let token2 = match &args[1] { Value::String(s) => s.as_bytes().to_vec(), _ => vec![] };
+                if token1.len() != token2.len() { return Ok(Value::Bool(false)); }
+                let mut result: u8 = 0;
+                for (a, b) in token1.iter().zip(token2.iter()) {
+                    result |= a ^ b;
+                }
+                Ok(Value::Bool(result == 0))
             }
 
             // ── Утиліти для середовища ──
@@ -3838,11 +3864,11 @@ impl VM {
             "url_кодувати" => {
                 match args.first() {
                     Some(Value::String(s)) => {
-                        let encoded: String = s.chars().map(|c| {
-                            if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '~' {
-                                c.to_string()
+                        let encoded: String = s.bytes().map(|b| {
+                            if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'~' {
+                                format!("{}", b as char)
                             } else {
-                                format!("%{:02X}", c as u32)
+                                format!("%{:02X}", b)
                             }
                         }).collect();
                         Ok(Value::String(encoded))
@@ -3854,21 +3880,23 @@ impl VM {
             "url_розкодувати" => {
                 match args.first() {
                     Some(Value::String(s)) => {
-                        let mut result = String::new();
+                        let mut bytes = Vec::new();
                         let mut chars = s.chars();
                         while let Some(c) = chars.next() {
                             if c == '%' {
                                 let hex: String = chars.by_ref().take(2).collect();
                                 if let Ok(byte) = u8::from_str_radix(&hex, 16) {
-                                    result.push(byte as char);
-                                } else {
-                                    result.push('%');
-                                    result.push_str(&hex);
+                                    bytes.push(byte);
                                 }
-                            } else if c == '+' { result.push(' '); }
-                            else { result.push(c); }
+                            } else if c == '+' {
+                                bytes.push(b' ');
+                            } else {
+                                let mut buf = [0u8; 4];
+                                let encoded = c.encode_utf8(&mut buf);
+                                bytes.extend_from_slice(encoded.as_bytes());
+                            }
                         }
-                        Ok(Value::String(result))
+                        Ok(Value::String(String::from_utf8_lossy(&bytes).to_string()))
                     }
                     _ => Err(anyhow::anyhow!("url_розкодувати очікує рядок")),
                 }
