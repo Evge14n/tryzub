@@ -351,6 +351,8 @@ pub struct VM {
     op_count: u64,
     /// Випадковий JWT секрет (генерується при створенні VM)
     default_jwt_secret: String,
+    /// Індекс для швидкого векторного пошуку
+    vector_index: Option<Vec<(usize, Vec<f64>)>>,
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -570,13 +572,14 @@ impl VM {
             // Векторна математика / ML / Утиліти
             for name in &["вектор_скалярний_добуток", "вектор_косинусна_подібність",
                 "вектор_нормалізувати", "вектор_евклідова_відстань", "вектор_найближчі",
+                "вектор_індекс_створити", "вектор_індекс_пошук",
                 "він_розібрати", "завантажити_файл", "веб_мультіпарт"] {
                 scope.set(name.to_string(), Value::BuiltinFn(name.to_string()));
             }
 
             for name in &["зображення_розмір", "зображення_змінити_розмір", "зображення_обрізати",
                 "зображення_мініатюра", "зображення_формат", "зображення_сірий",
-                "зображення_повернути", "зображення_відзеркалити"] {
+                "зображення_повернути", "зображення_відзеркалити", "зображення_в_тензор"] {
                 scope.set(name.to_string(), Value::BuiltinFn(name.to_string()));
             }
 
@@ -634,6 +637,7 @@ impl VM {
                 let mut rng = rand::thread_rng();
                 (0..64).map(|_| format!("{:02x}", rng.gen::<u8>())).collect()
             },
+            vector_index: None,
         }
     }
 
@@ -1848,6 +1852,9 @@ impl VM {
         for stream in listener.incoming() {
             match stream {
                 Ok(mut stream) => {
+                    stream.set_nodelay(true).ok();
+                    stream.set_read_timeout(Some(std::time::Duration::from_secs(30))).ok();
+                    stream.set_write_timeout(Some(std::time::Duration::from_secs(30))).ok();
                     let request_start = std::time::Instant::now();
                     let client_ip = stream.peer_addr().map(|a| a.ip().to_string()).unwrap_or_default();
 
@@ -4622,6 +4629,43 @@ impl VM {
                 Ok(Value::Array(results))
             }
 
+            // ── Vector Index ──
+
+            "вектор_індекс_створити" => {
+                let vectors = match &args[0] {
+                    Value::Array(arr) => arr.clone(),
+                    _ => return Err(anyhow::anyhow!("Expected array of vectors")),
+                };
+                let mut index_data = Vec::new();
+                for (i, v) in vectors.iter().enumerate() {
+                    let vec = self.value_to_float_vec(v);
+                    let norm: f64 = vec.iter().map(|x| x * x).sum::<f64>().sqrt();
+                    let normalized: Vec<f64> = if norm > 0.0 { vec.iter().map(|x| x / norm).collect() } else { vec };
+                    index_data.push((i, normalized));
+                }
+                self.vector_index = Some(index_data);
+                Ok(Value::String(format!("Index created: {} vectors", vectors.len())))
+            }
+            "вектор_індекс_пошук" => {
+                let query = self.value_to_float_vec(&args[0]);
+                let top_k = match args.get(1) { Some(Value::Integer(n)) => *n as usize, _ => 5 };
+                let index = self.vector_index.as_ref().ok_or_else(|| anyhow::anyhow!("No index created"))?;
+                let query_norm: f64 = query.iter().map(|x| x * x).sum::<f64>().sqrt();
+                let q_normalized: Vec<f64> = if query_norm > 0.0 { query.iter().map(|x| x / query_norm).collect() } else { query };
+                let mut scores: Vec<(usize, f64)> = index.iter().map(|(idx, vec)| {
+                    let sim: f64 = q_normalized.iter().zip(vec.iter()).map(|(a, b)| a * b).sum();
+                    (*idx, sim)
+                }).collect();
+                scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                let results: Vec<Value> = scores.iter().take(top_k).map(|(idx, sim)| {
+                    let mut map = Vec::new();
+                    map.push((Value::String("індекс".to_string()), Value::Integer(*idx as i64)));
+                    map.push((Value::String("подібність".to_string()), Value::Float(*sim)));
+                    Value::Dict(map)
+                }).collect();
+                Ok(Value::Array(results))
+            }
+
             // ── VIN парсер ──
 
             "він_розібрати" => {
@@ -4671,25 +4715,35 @@ impl VM {
             // ── Multipart form parsing ──
 
             "веб_мультіпарт" => {
-                let body = match &args[0] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("Expected body string")) };
+                let body = match &args[0] { Value::String(s) => s.as_bytes().to_vec(), _ => return Err(anyhow::anyhow!("Expected body")) };
                 let boundary = match &args[1] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("Expected boundary")) };
-                let parts: Vec<Value> = body.split(&format!("--{}", boundary))
-                    .filter(|p| !p.is_empty() && !p.starts_with("--"))
-                    .filter_map(|part| {
-                        let mut headers_body = part.splitn(2, "\r\n\r\n");
-                        let headers = headers_body.next()?;
-                        let body = headers_body.next()?.trim_end_matches("\r\n");
-                        let name = headers.split("name=\"").nth(1)?.split('"').next()?;
-                        let filename = headers.split("filename=\"").nth(1).and_then(|f| f.split('"').next());
-                        let mut entry = Vec::new();
-                        entry.push((Value::String("назва".to_string()), Value::String(name.to_string())));
-                        if let Some(fname) = filename {
-                            entry.push((Value::String("файл".to_string()), Value::String(fname.to_string())));
-                            entry.push((Value::String("розмір".to_string()), Value::Integer(body.len() as i64)));
+                let delimiter = format!("--{}", boundary).into_bytes();
+                let mut parts = Vec::new();
+                let mut start = 0;
+                while let Some(pos) = body[start..].windows(delimiter.len()).position(|w| w == delimiter.as_slice()) {
+                    if start > 0 {
+                        let part_data = &body[start..start + pos];
+                        if let Some(header_end) = part_data.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let headers = String::from_utf8_lossy(&part_data[..header_end]).to_string();
+                            let content = &part_data[header_end + 4..];
+                            let content = if content.ends_with(b"\r\n") { &content[..content.len()-2] } else { content };
+                            let name = headers.split("name=\"").nth(1).and_then(|s| s.split('"').next()).unwrap_or("").to_string();
+                            let filename = headers.split("filename=\"").nth(1).and_then(|s| s.split('"').next()).map(|s| s.to_string());
+                            let mut entry = Vec::new();
+                            entry.push((Value::String("назва".to_string()), Value::String(name)));
+                            if let Some(fname) = &filename {
+                                entry.push((Value::String("файл".to_string()), Value::String(fname.clone())));
+                                entry.push((Value::String("розмір".to_string()), Value::Integer(content.len() as i64)));
+                                entry.push((Value::String("дані_base64".to_string()), Value::String(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, content))));
+                            } else {
+                                entry.push((Value::String("значення".to_string()), Value::String(String::from_utf8_lossy(content).to_string())));
+                            }
+                            parts.push(Value::Dict(entry));
                         }
-                        entry.push((Value::String("значення".to_string()), Value::String(body.to_string())));
-                        Some(Value::Dict(entry))
-                    }).collect();
+                    }
+                    start = start + pos + delimiter.len();
+                    if body.get(start) == Some(&b'\r') { start += 2; }
+                }
                 Ok(Value::Array(parts))
             }
 
@@ -4782,6 +4836,33 @@ impl VM {
                 let flipped = if axis == "вертикально" { img.flipv() } else { img.fliph() };
                 flipped.save(&output).map_err(|e| anyhow::anyhow!("Failed to save: {}", e))?;
                 Ok(Value::String(output))
+            }
+            "зображення_в_тензор" => {
+                let path = match &args[0] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("Expected path")) };
+                let width = match args.get(1) { Some(Value::Integer(n)) => *n as u32, _ => 224 };
+                let height = match args.get(2) { Some(Value::Integer(n)) => *n as u32, _ => 224 };
+                let img = image::open(&path).map_err(|e| anyhow::anyhow!("Failed to open image: {}", e))?;
+                let resized = img.resize_exact(width, height, image::imageops::FilterType::Lanczos3);
+                let rgb = resized.to_rgb8();
+                let mut r_channel = Vec::new();
+                let mut g_channel = Vec::new();
+                let mut b_channel = Vec::new();
+                for pixel in rgb.pixels() {
+                    r_channel.push(Value::Float((pixel[0] as f64 / 255.0 - 0.485) / 0.229));
+                    g_channel.push(Value::Float((pixel[1] as f64 / 255.0 - 0.456) / 0.224));
+                    b_channel.push(Value::Float((pixel[2] as f64 / 255.0 - 0.406) / 0.225));
+                }
+                let tensor = vec![
+                    Value::Array(r_channel),
+                    Value::Array(g_channel),
+                    Value::Array(b_channel),
+                ];
+                let mut result = Vec::new();
+                result.push((Value::String("тензор".to_string()), Value::Array(tensor)));
+                result.push((Value::String("форма".to_string()), Value::Array(vec![
+                    Value::Integer(3), Value::Integer(height as i64), Value::Integer(width as i64)
+                ])));
+                Ok(Value::Dict(result))
             }
 
             // ── Макроси ──
