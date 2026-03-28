@@ -448,6 +448,14 @@ enum LoopOptResult {
     SetVariable(String, Value),
 }
 
+impl Drop for VM {
+    fn drop(&mut self) {
+        for (addr, layout) in self.allocations.drain() {
+            unsafe { std::alloc::dealloc(addr as *mut u8, layout); }
+        }
+    }
+}
+
 impl VM {
     pub fn new() -> Self {
         let global_scope = Rc::new(RefCell::new(Scope::new(None)));
