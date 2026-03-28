@@ -293,7 +293,7 @@ fn run_file(file: PathBuf, fast: bool, args: Vec<String>) -> Result<()> {
 }
 
 fn watch_file(file: PathBuf) -> Result<()> {
-    use notify::{Watcher, RecursiveMode, Config};
+    use notify::{Watcher, RecursiveMode};
     use std::sync::mpsc;
 
     let (tx, rx) = mpsc::channel();
