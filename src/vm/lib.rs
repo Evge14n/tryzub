@@ -566,6 +566,13 @@ impl VM {
                 scope.set(name.to_string(), Value::BuiltinFn(name.to_string()));
             }
 
+            // Векторна математика / ML / Утиліти
+            for name in &["вектор_скалярний_добуток", "вектор_косинусна_подібність",
+                "вектор_нормалізувати", "вектор_евклідова_відстань", "вектор_найближчі",
+                "він_розібрати", "завантажити_файл", "веб_мультіпарт"] {
+                scope.set(name.to_string(), Value::BuiltinFn(name.to_string()));
+            }
+
             // Веб-сервер + БД + Автентифікація
             for name in &["веб_сервер", "веб_отримати", "веб_надіслати", "веб_оновити",
                 "веб_видалити", "веб_статичні", "веб_запустити", "веб_html", "веб_json",
@@ -2218,6 +2225,17 @@ impl VM {
             return Err(anyhow::anyhow!("SQL ідентифікатор '{}' не може починатись з цифри", name));
         }
         Ok(())
+    }
+
+    fn value_to_float_vec(&self, val: &Value) -> Vec<f64> {
+        match val {
+            Value::Array(arr) => arr.iter().map(|v| match v {
+                Value::Float(f) => *f,
+                Value::Integer(i) => *i as f64,
+                _ => 0.0,
+            }).collect(),
+            _ => vec![],
+        }
     }
 
     pub fn call_builtin(&mut self, name: &str, args: Vec<Value>) -> Result<Value> {
@@ -4534,6 +4552,138 @@ impl VM {
                     (Value::String("загалом_мс".into()), Value::Float(total.as_secs_f64() * 1000.0)),
                     (Value::String("ітерацій".into()), Value::Integer(iterations as i64)),
                 ]))
+            }
+
+            // ── Векторна математика / ML ──
+
+            "вектор_скалярний_добуток" => {
+                let a = self.value_to_float_vec(&args[0]);
+                let b = self.value_to_float_vec(&args[1]);
+                if a.len() != b.len() { return Err(anyhow::anyhow!("Vectors must have same length")); }
+                let dot: f64 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+                Ok(Value::Float(dot))
+            }
+            "вектор_косинусна_подібність" => {
+                let a = self.value_to_float_vec(&args[0]);
+                let b = self.value_to_float_vec(&args[1]);
+                if a.len() != b.len() { return Err(anyhow::anyhow!("Vectors must have same length")); }
+                let dot: f64 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+                let norm_a: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt();
+                let norm_b: f64 = b.iter().map(|x| x * x).sum::<f64>().sqrt();
+                if norm_a == 0.0 || norm_b == 0.0 { return Ok(Value::Float(0.0)); }
+                Ok(Value::Float(dot / (norm_a * norm_b)))
+            }
+            "вектор_нормалізувати" => {
+                let a = self.value_to_float_vec(&args[0]);
+                let norm: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt();
+                if norm == 0.0 { return Ok(args[0].clone()); }
+                let normalized: Vec<Value> = a.iter().map(|x| Value::Float(x / norm)).collect();
+                Ok(Value::Array(normalized))
+            }
+            "вектор_евклідова_відстань" => {
+                let a = self.value_to_float_vec(&args[0]);
+                let b = self.value_to_float_vec(&args[1]);
+                if a.len() != b.len() { return Err(anyhow::anyhow!("Vectors must have same length")); }
+                let dist: f64 = a.iter().zip(b.iter()).map(|(x, y)| (x - y).powi(2)).sum::<f64>().sqrt();
+                Ok(Value::Float(dist))
+            }
+            "вектор_найближчі" => {
+                let query = self.value_to_float_vec(&args[0]);
+                let vectors = match &args[1] {
+                    Value::Array(arr) => arr.clone(),
+                    _ => return Err(anyhow::anyhow!("Expected array of vectors")),
+                };
+                let top_k = match &args[2] {
+                    Value::Integer(n) => *n as usize,
+                    _ => 5,
+                };
+                let mut similarities: Vec<(usize, f64)> = vectors.iter().enumerate().map(|(i, v)| {
+                    let vec_b = self.value_to_float_vec(v);
+                    if query.len() != vec_b.len() { return (i, 0.0); }
+                    let dot: f64 = query.iter().zip(vec_b.iter()).map(|(x, y)| x * y).sum();
+                    let norm_a: f64 = query.iter().map(|x| x * x).sum::<f64>().sqrt();
+                    let norm_b: f64 = vec_b.iter().map(|x| x * x).sum::<f64>().sqrt();
+                    if norm_a == 0.0 || norm_b == 0.0 { (i, 0.0) } else { (i, dot / (norm_a * norm_b)) }
+                }).collect();
+                similarities.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                let results: Vec<Value> = similarities.iter().take(top_k).map(|(idx, sim)| {
+                    let mut map = Vec::new();
+                    map.push((Value::String("індекс".to_string()), Value::Integer(*idx as i64)));
+                    map.push((Value::String("подібність".to_string()), Value::Float(*sim)));
+                    Value::Dict(map)
+                }).collect();
+                Ok(Value::Array(results))
+            }
+
+            // ── VIN парсер ──
+
+            "він_розібрати" => {
+                let vin = match &args[0] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("Expected string")) };
+                if vin.len() != 17 { return Err(anyhow::anyhow!("VIN must be 17 characters")); }
+                let vin_upper = vin.to_uppercase();
+                let region = match vin_upper.chars().next().unwrap_or('0') {
+                    '1'..='5' => "Північна Америка", 'S'..='Z' => "Європа", 'J'..='R' => "Азія",
+                    '6'..='7' => "Океанія", '8'..='9' => "Південна Америка", 'A'..='H' => "Африка", _ => "Невідомий"
+                };
+                let year_char = vin_upper.chars().nth(9).unwrap_or('0');
+                let year = match year_char {
+                    'A' => 2010, 'B' => 2011, 'C' => 2012, 'D' => 2013, 'E' => 2014,
+                    'F' => 2015, 'G' => 2016, 'H' => 2017, 'J' => 2018, 'K' => 2019,
+                    'L' => 2020, 'M' => 2021, 'N' => 2022, 'P' => 2023, 'R' => 2024,
+                    'S' => 2025, 'T' => 2026, '1' => 2001, '2' => 2002, '3' => 2003,
+                    '4' => 2004, '5' => 2005, '6' => 2006, '7' => 2007, '8' => 2008, '9' => 2009, _ => 0
+                };
+                let mut result = Vec::new();
+                result.push((Value::String("він".to_string()), Value::String(vin_upper.clone())));
+                result.push((Value::String("регіон".to_string()), Value::String(region.to_string())));
+                result.push((Value::String("виробник".to_string()), Value::String(vin_upper[0..3].to_string())));
+                result.push((Value::String("опис".to_string()), Value::String(vin_upper[3..8].to_string())));
+                result.push((Value::String("рік".to_string()), Value::Integer(year)));
+                result.push((Value::String("завод".to_string()), Value::String(vin_upper[10..11].to_string())));
+                result.push((Value::String("серійний".to_string()), Value::String(vin_upper[11..17].to_string())));
+                Ok(Value::Dict(result))
+            }
+
+            // ── Завантаження файлів ──
+
+            "завантажити_файл" => {
+                use std::io::Read;
+                let url = match &args[0] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("Expected URL")) };
+                let path = match &args[1] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("Expected path")) };
+                if path.contains("..") || path.contains('\0') { return Err(anyhow::anyhow!("Invalid path")); }
+                let resp = ureq::get(&url).call().map_err(|e| anyhow::anyhow!("Download failed: {}", e))?;
+                let mut bytes = Vec::new();
+                resp.into_reader().take(100_000_000).read_to_end(&mut bytes).map_err(|e| anyhow::anyhow!("Read failed: {}", e))?;
+                std::fs::write(&path, &bytes).map_err(|e| anyhow::anyhow!("Write failed: {}", e))?;
+                let mut result = Vec::new();
+                result.push((Value::String("шлях".to_string()), Value::String(path)));
+                result.push((Value::String("розмір".to_string()), Value::Integer(bytes.len() as i64)));
+                Ok(Value::Dict(result))
+            }
+
+            // ── Multipart form parsing ──
+
+            "веб_мультіпарт" => {
+                let body = match &args[0] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("Expected body string")) };
+                let boundary = match &args[1] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("Expected boundary")) };
+                let parts: Vec<Value> = body.split(&format!("--{}", boundary))
+                    .filter(|p| !p.is_empty() && !p.starts_with("--"))
+                    .filter_map(|part| {
+                        let mut headers_body = part.splitn(2, "\r\n\r\n");
+                        let headers = headers_body.next()?;
+                        let body = headers_body.next()?.trim_end_matches("\r\n");
+                        let name = headers.split("name=\"").nth(1)?.split('"').next()?;
+                        let filename = headers.split("filename=\"").nth(1).and_then(|f| f.split('"').next());
+                        let mut entry = Vec::new();
+                        entry.push((Value::String("назва".to_string()), Value::String(name.to_string())));
+                        if let Some(fname) = filename {
+                            entry.push((Value::String("файл".to_string()), Value::String(fname.to_string())));
+                            entry.push((Value::String("розмір".to_string()), Value::Integer(body.len() as i64)));
+                        }
+                        entry.push((Value::String("значення".to_string()), Value::String(body.to_string())));
+                        Some(Value::Dict(entry))
+                    }).collect();
+                Ok(Value::Array(parts))
             }
 
             // ── Макроси ──
