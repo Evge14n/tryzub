@@ -16,6 +16,7 @@ use sha2::Sha256;
 use sha2::Digest as Sha2Digest;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use rand::Rng;
+use image;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -570,6 +571,12 @@ impl VM {
             for name in &["вектор_скалярний_добуток", "вектор_косинусна_подібність",
                 "вектор_нормалізувати", "вектор_евклідова_відстань", "вектор_найближчі",
                 "він_розібрати", "завантажити_файл", "веб_мультіпарт"] {
+                scope.set(name.to_string(), Value::BuiltinFn(name.to_string()));
+            }
+
+            for name in &["зображення_розмір", "зображення_змінити_розмір", "зображення_обрізати",
+                "зображення_мініатюра", "зображення_формат", "зображення_сірий",
+                "зображення_повернути", "зображення_відзеркалити"] {
                 scope.set(name.to_string(), Value::BuiltinFn(name.to_string()));
             }
 
@@ -4684,6 +4691,97 @@ impl VM {
                         Some(Value::Dict(entry))
                     }).collect();
                 Ok(Value::Array(parts))
+            }
+
+            "зображення_розмір" => {
+                let path = match &args[0] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("Expected path")) };
+                let img = image::open(&path).map_err(|e| anyhow::anyhow!("Failed to open image: {}", e))?;
+                let mut result = Vec::new();
+                result.push((Value::String("ширина".to_string()), Value::Integer(img.width() as i64)));
+                result.push((Value::String("висота".to_string()), Value::Integer(img.height() as i64)));
+                Ok(Value::Dict(result))
+            }
+            "зображення_змінити_розмір" => {
+                let path = match &args[0] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("Expected path")) };
+                let width = match &args[1] { Value::Integer(n) => *n as u32, _ => return Err(anyhow::anyhow!("Expected width")) };
+                let height = match &args[2] { Value::Integer(n) => *n as u32, _ => return Err(anyhow::anyhow!("Expected height")) };
+                let output = match args.get(3) { Some(Value::String(s)) => s.clone(), _ => path.clone() };
+                let img = image::open(&path).map_err(|e| anyhow::anyhow!("Failed to open image: {}", e))?;
+                let resized = img.resize_exact(width, height, image::imageops::FilterType::Lanczos3);
+                resized.save(&output).map_err(|e| anyhow::anyhow!("Failed to save: {}", e))?;
+                let mut result = Vec::new();
+                result.push((Value::String("шлях".to_string()), Value::String(output)));
+                result.push((Value::String("ширина".to_string()), Value::Integer(width as i64)));
+                result.push((Value::String("висота".to_string()), Value::Integer(height as i64)));
+                Ok(Value::Dict(result))
+            }
+            "зображення_обрізати" => {
+                let path = match &args[0] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("Expected path")) };
+                let x = match &args[1] { Value::Integer(n) => *n as u32, _ => return Err(anyhow::anyhow!("Expected x")) };
+                let y = match &args[2] { Value::Integer(n) => *n as u32, _ => return Err(anyhow::anyhow!("Expected y")) };
+                let w = match &args[3] { Value::Integer(n) => *n as u32, _ => return Err(anyhow::anyhow!("Expected width")) };
+                let h = match &args[4] { Value::Integer(n) => *n as u32, _ => return Err(anyhow::anyhow!("Expected height")) };
+                let output = match args.get(5) { Some(Value::String(s)) => s.clone(), _ => path.clone() };
+                let mut img = image::open(&path).map_err(|e| anyhow::anyhow!("Failed to open image: {}", e))?;
+                let cropped = img.crop(x, y, w, h);
+                cropped.save(&output).map_err(|e| anyhow::anyhow!("Failed to save: {}", e))?;
+                Ok(Value::String(output))
+            }
+            "зображення_мініатюра" => {
+                let path = match &args[0] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("Expected path")) };
+                let max_size = match &args[1] { Value::Integer(n) => *n as u32, _ => 200 };
+                let output = match args.get(2) { Some(Value::String(s)) => s.clone(), _ => {
+                    let p = std::path::Path::new(&path);
+                    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("img");
+                    let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("jpg");
+                    format!("{}_thumb.{}", stem, ext)
+                }};
+                let img = image::open(&path).map_err(|e| anyhow::anyhow!("Failed to open image: {}", e))?;
+                let thumb = img.thumbnail(max_size, max_size);
+                thumb.save(&output).map_err(|e| anyhow::anyhow!("Failed to save: {}", e))?;
+                let mut result = Vec::new();
+                result.push((Value::String("шлях".to_string()), Value::String(output)));
+                result.push((Value::String("ширина".to_string()), Value::Integer(thumb.width() as i64)));
+                result.push((Value::String("висота".to_string()), Value::Integer(thumb.height() as i64)));
+                Ok(Value::Dict(result))
+            }
+            "зображення_формат" => {
+                let input = match &args[0] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("Expected path")) };
+                let output = match &args[1] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("Expected output path")) };
+                let img = image::open(&input).map_err(|e| anyhow::anyhow!("Failed to open image: {}", e))?;
+                img.save(&output).map_err(|e| anyhow::anyhow!("Failed to save: {}", e))?;
+                Ok(Value::String(output))
+            }
+            "зображення_сірий" => {
+                let path = match &args[0] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("Expected path")) };
+                let output = match args.get(1) { Some(Value::String(s)) => s.clone(), _ => path.clone() };
+                let img = image::open(&path).map_err(|e| anyhow::anyhow!("Failed to open image: {}", e))?;
+                let gray = img.grayscale();
+                gray.save(&output).map_err(|e| anyhow::anyhow!("Failed to save: {}", e))?;
+                Ok(Value::String(output))
+            }
+            "зображення_повернути" => {
+                let path = match &args[0] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("Expected path")) };
+                let degrees = match &args[1] { Value::Integer(n) => *n, _ => 90 };
+                let output = match args.get(2) { Some(Value::String(s)) => s.clone(), _ => path.clone() };
+                let img = image::open(&path).map_err(|e| anyhow::anyhow!("Failed to open image: {}", e))?;
+                let rotated = match degrees {
+                    90 => img.rotate90(),
+                    180 => img.rotate180(),
+                    270 => img.rotate270(),
+                    _ => return Err(anyhow::anyhow!("Supported rotations: 90, 180, 270")),
+                };
+                rotated.save(&output).map_err(|e| anyhow::anyhow!("Failed to save: {}", e))?;
+                Ok(Value::String(output))
+            }
+            "зображення_відзеркалити" => {
+                let path = match &args[0] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("Expected path")) };
+                let axis = match args.get(1) { Some(Value::String(s)) => s.clone(), _ => "горизонтально".to_string() };
+                let output = match args.get(2) { Some(Value::String(s)) => s.clone(), _ => path.clone() };
+                let img = image::open(&path).map_err(|e| anyhow::anyhow!("Failed to open image: {}", e))?;
+                let flipped = if axis == "вертикально" { img.flipv() } else { img.fliph() };
+                flipped.save(&output).map_err(|e| anyhow::anyhow!("Failed to save: {}", e))?;
+                Ok(Value::String(output))
             }
 
             // ── Макроси ──
