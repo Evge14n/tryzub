@@ -594,8 +594,11 @@ impl Parser {
                     });
                 } else {
                     let param_name = self.consume_identifier("Очікувалось ім'я параметра")?;
-                    self.consume(&TokenKind::Двокрапка, "Очікувалась ':' після імені параметра")?;
-                    let param_type = self.parse_type()?;
+                    let param_type = if self.match_token(&TokenKind::Двокрапка) {
+                        self.parse_type()?
+                    } else {
+                        Type::Named("Будь".to_string())
+                    };
 
                     let default = if self.match_token(&TokenKind::Присвоїти) {
                         Some(self.expression()?)
@@ -1161,9 +1164,9 @@ impl Parser {
     }
 
     fn if_statement(&mut self) -> Result<Statement> {
-        self.consume(&TokenKind::ЛіваДужка, "Очікувалась '(' після 'якщо'")?;
+        let has_parens = self.match_token(&TokenKind::ЛіваДужка);
         let condition = self.expression()?;
-        self.consume(&TokenKind::ПраваДужка, "Очікувалась ')'")?;
+        if has_parens { self.consume(&TokenKind::ПраваДужка, "Очікувалась ')'")?; }
 
         let then_branch = Box::new(self.statement()?);
         let else_branch = if self.match_token(&TokenKind::Інакше) {
@@ -1176,23 +1179,22 @@ impl Parser {
     }
 
     fn while_statement(&mut self) -> Result<Statement> {
-        self.consume(&TokenKind::ЛіваДужка, "Очікувалась '(' після 'поки'")?;
+        let has_parens = self.match_token(&TokenKind::ЛіваДужка);
         let condition = self.expression()?;
-        self.consume(&TokenKind::ПраваДужка, "Очікувалась ')'")?;
+        if has_parens { self.consume(&TokenKind::ПраваДужка, "Очікувалась ')'")?; }
         let body = Box::new(self.statement()?);
 
         Ok(Statement::While { condition, body })
     }
 
     fn for_statement(&mut self) -> Result<Statement> {
-        self.consume(&TokenKind::ЛіваДужка, "Очікувалась '(' після 'для'")?;
+        let has_parens = self.match_token(&TokenKind::ЛіваДужка);
 
         let variable = self.consume_identifier("Очікувалось ім'я змінної циклу")?;
 
-        // для (x в колекція) або для (x від a до b)
         if self.match_token(&TokenKind::В) {
             let iterable = self.expression()?;
-            self.consume(&TokenKind::ПраваДужка, "Очікувалась ')'")?;
+            if has_parens { self.consume(&TokenKind::ПраваДужка, "Очікувалась ')'")?; }
             let body = Box::new(self.statement()?);
 
             Ok(Statement::ForIn {
@@ -1212,7 +1214,7 @@ impl Parser {
                 None
             };
 
-            self.consume(&TokenKind::ПраваДужка, "Очікувалась ')'")?;
+            if has_parens { self.consume(&TokenKind::ПраваДужка, "Очікувалась ')'")?; }
             let body = Box::new(self.statement()?);
 
             Ok(Statement::For { variable, from, to, step, body })

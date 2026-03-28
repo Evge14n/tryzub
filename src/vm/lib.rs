@@ -1255,10 +1255,16 @@ impl VM {
                 let prev_env = self.current_env.clone();
                 self.current_env = Rc::new(RefCell::new(Scope::new(Some(closure))));
 
-                for (param, arg) in params.iter().zip(args.iter()) {
-                    if param.name != "себе" {
-                        self.current_env.borrow_mut().set(param.name.clone(), arg.clone());
-                    }
+                for (i, param) in params.iter().enumerate() {
+                    if param.name == "себе" { continue; }
+                    let val = if let Some(arg) = args.get(i) {
+                        arg.clone()
+                    } else if let Some(ref default_expr) = param.default {
+                        self.evaluate_expression(default_expr.clone())?
+                    } else {
+                        Value::Null
+                    };
+                    self.current_env.borrow_mut().set(param.name.clone(), val);
                 }
                 if let Some(contract) = self.contracts.get(&func_name).cloned() {
                     for pre in &contract.preconditions {
