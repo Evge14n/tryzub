@@ -1920,10 +1920,9 @@ impl VM {
                     let accept_encoding_gzip = headers.get("accept-encoding")
                         .map(|v| v.contains("gzip")).unwrap_or(false);
 
-                    // Thread pool: статичні файли обробляємо в окремому потоці
                     let has_ext = path.rfind('.').map(|i| i > path.rfind('/').unwrap_or(0)).unwrap_or(false);
                     let is_static_candidate = method == "GET" && routes.static_dir.is_some() && has_ext
-                        && !path.contains("..") && !path.contains('\0')
+                        && !path.contains("..") && !path.contains("%2e") && !path.contains("%2E") && !path.contains('\0')
                         && routes.find_route(method, path).is_none();
 
                     if is_static_candidate {
@@ -2219,11 +2218,11 @@ impl VM {
     fn serve_static_threaded(mut stream: std::net::TcpStream, path: &str, static_dir: &str, gzip: bool) {
         use std::io::Write;
         let file_path = format!("{}{}", static_dir, path);
-        let (status, body_bytes, mime) = if let Ok(content) = std::fs::read(&file_path) {
+        let (status, status_text, body_bytes, mime) = if let Ok(content) = std::fs::read(&file_path) {
             let mime = Self::guess_mime(&file_path);
-            (200, content, mime)
+            (200, "OK", content, mime)
         } else {
-            (404, b"<html><body><h1>404</h1></body></html>".to_vec(), "text/html; charset=utf-8".to_string())
+            (404, "Not Found", b"<html><body><h1>404</h1></body></html>".to_vec(), "text/html; charset=utf-8".to_string())
         };
 
         let final_body = if gzip && body_bytes.len() > 1024 {
@@ -2233,9 +2232,9 @@ impl VM {
             let _ = enc.write_all(&body_bytes);
             if let Ok(compressed) = enc.finish() {
                 let header = format!(
-                    "HTTP/1.1 {} OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nContent-Encoding: gzip\r\n\
+                    "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nContent-Encoding: gzip\r\n\
                      Cache-Control: public, max-age=86400\r\nConnection: close\r\n\r\n",
-                    status, mime, compressed.len()
+                    status, status_text, mime, compressed.len()
                 );
                 let _ = stream.write_all(header.as_bytes());
                 let _ = stream.write_all(&compressed);
@@ -2248,9 +2247,9 @@ impl VM {
         };
 
         let header = format!(
-            "HTTP/1.1 {} OK\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
+            "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
              Cache-Control: public, max-age=86400\r\nConnection: close\r\n\r\n",
-            status, mime, final_body.len()
+            status, status_text, mime, final_body.len()
         );
         let _ = stream.write_all(header.as_bytes());
         let _ = stream.write_all(&final_body);
