@@ -493,6 +493,7 @@ impl VM {
             scope.set("ПІ".to_string(), Value::Float(std::f64::consts::PI));
             scope.set("Е".to_string(), Value::Float(std::f64::consts::E));
             scope.set("ціле_з_рядка".to_string(), Value::BuiltinFn("ціле_з_рядка".to_string()));
+            scope.set("ціле_в_рядок".to_string(), Value::BuiltinFn("ціле_в_рядок".to_string()));
             scope.set("дробове_з_рядка".to_string(), Value::BuiltinFn("дробове_з_рядка".to_string()));
 
             // Файловий I/O
@@ -1919,8 +1920,9 @@ impl VM {
                         .map(|v| v.contains("gzip")).unwrap_or(false);
 
                     let mut body_str = String::new();
+                    let mut body_buf: Vec<u8> = Vec::new();
                     if content_length > 0 {
-                        let mut body_buf = vec![0u8; content_length];
+                        body_buf = vec![0u8; content_length];
                         let _ = reader.read_exact(&mut body_buf);
                         body_str = String::from_utf8_lossy(&body_buf).to_string();
                     }
@@ -1963,6 +1965,9 @@ impl VM {
                         (Value::String("запит".to_string()), Value::Dict(query_params)),
                         (Value::String("тіло".to_string()), body_value),
                         (Value::String("тіло_сирий".to_string()), Value::String(body_str)),
+                        (Value::String("тіло_байти".to_string()), if content_length > 0 {
+                            Value::String(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &body_buf))
+                        } else { Value::String(String::new()) }),
                         (Value::String("ip".to_string()), Value::String(
                             stream.peer_addr().map(|a| a.to_string()).unwrap_or_default()
                         )),
@@ -2571,6 +2576,15 @@ impl VM {
                         }
                     }
                     _ => Err(anyhow::anyhow!("ціле_з_рядка очікує рядок")),
+                }
+            }
+            "ціле_в_рядок" => {
+                match args.first() {
+                    Some(Value::Integer(n)) => Ok(Value::String(n.to_string())),
+                    Some(Value::Float(f)) => Ok(Value::String((*f as i64).to_string())),
+                    Some(Value::String(s)) => Ok(Value::String(s.clone())),
+                    Some(Value::Bool(b)) => Ok(Value::String(if *b { "1" } else { "0" }.to_string())),
+                    _ => Ok(Value::String("0".to_string())),
                 }
             }
             "дробове_з_рядка" => {
@@ -4743,7 +4757,16 @@ impl VM {
             // ── Multipart form parsing ──
 
             "веб_мультіпарт" => {
-                let body = match &args[0] { Value::String(s) => s.as_bytes().to_vec(), _ => return Err(anyhow::anyhow!("Expected body")) };
+                let body = match &args[0] {
+                    Value::String(s) => {
+                        if s.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=' || c == '\n') && s.len() > 100 {
+                            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, s).unwrap_or_else(|_| s.as_bytes().to_vec())
+                        } else {
+                            s.as_bytes().to_vec()
+                        }
+                    },
+                    _ => return Err(anyhow::anyhow!("Expected body"))
+                };
                 let boundary = match &args[1] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("Expected boundary")) };
                 let delimiter = format!("--{}", boundary).into_bytes();
                 let mut parts = Vec::new();
