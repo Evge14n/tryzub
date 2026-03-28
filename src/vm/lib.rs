@@ -1,7 +1,7 @@
 pub mod bytecode;
 pub mod compiler;
 
-// Тризуб VM v5.2
+// Тризуб VM v5.2.2
 
 use anyhow::Result;
 use std::collections::HashMap;

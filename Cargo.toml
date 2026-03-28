@@ -1,6 +1,6 @@
 [package]
 name = "tryzub"
-version = "5.2.0"
+version = "5.2.2"
 edition = "2021"
 authors = ["*******"]
 description = "Тризуб — сучасна українська мова програмування"
