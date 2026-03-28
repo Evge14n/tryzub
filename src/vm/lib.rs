@@ -1928,19 +1928,24 @@ impl VM {
                         && routes.find_route(method, path).is_none();
 
                     if is_static_candidate {
-                        let current = active_threads.load(std::sync::atomic::Ordering::Relaxed);
-                        if current < max_threads {
+                        let counter = active_threads.clone();
+                        let prev = counter.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                        if prev < max_threads {
                             let static_dir = routes.static_dir.as_ref().unwrap().clone();
                             let path_owned = path.to_string();
-                            let counter = active_threads.clone();
-                            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             std::thread::spawn(move || {
+                                struct ThreadGuard(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+                                impl Drop for ThreadGuard {
+                                    fn drop(&mut self) {
+                                        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                                    }
+                                }
+                                let _guard = ThreadGuard(counter);
                                 Self::serve_static_threaded(stream, &path_owned, &static_dir, accept_encoding_gzip);
-                                counter.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                             });
                             continue;
                         }
-                        // Якщо потоків забагато — обробляємо в main thread (fallthrough)
+                        counter.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
                     }
 
                     let mut body_str = String::new();
