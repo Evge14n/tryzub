@@ -1851,10 +1851,12 @@ impl VM {
         }
         println!("   Натисніть Ctrl+C для зупинки\n");
 
-        // Rate limiting: IP → (кількість_запитів, час_першого)
         let mut rate_limits: HashMap<String, (u32, std::time::Instant)> = HashMap::new();
-        let rate_limit_max: u32 = 200; // запитів
+        let rate_limit_max: u32 = 200;
         let rate_limit_window = std::time::Duration::from_secs(60);
+        let max_body_size: usize = 10 * 1024 * 1024; // 10MB
+        let active_threads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let max_threads: usize = 64;
 
         for stream in listener.incoming() {
             match stream {
@@ -1926,16 +1928,28 @@ impl VM {
                         && routes.find_route(method, path).is_none();
 
                     if is_static_candidate {
-                        let static_dir = routes.static_dir.as_ref().unwrap().clone();
-                        let path_owned = path.to_string();
-                        std::thread::spawn(move || {
-                            Self::serve_static_threaded(stream, &path_owned, &static_dir, accept_encoding_gzip);
-                        });
-                        continue;
+                        let current = active_threads.load(std::sync::atomic::Ordering::Relaxed);
+                        if current < max_threads {
+                            let static_dir = routes.static_dir.as_ref().unwrap().clone();
+                            let path_owned = path.to_string();
+                            let counter = active_threads.clone();
+                            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            std::thread::spawn(move || {
+                                Self::serve_static_threaded(stream, &path_owned, &static_dir, accept_encoding_gzip);
+                                counter.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                            });
+                            continue;
+                        }
+                        // Якщо потоків забагато — обробляємо в main thread (fallthrough)
                     }
 
                     let mut body_str = String::new();
                     let mut body_buf: Vec<u8> = Vec::new();
+                    if content_length > max_body_size {
+                        let response = "HTTP/1.1 413 Payload Too Large\r\nConnection: close\r\n\r\n";
+                        let _ = stream.write_all(response.as_bytes());
+                        continue;
+                    }
                     if content_length > 0 {
                         body_buf = vec![0u8; content_length];
                         let _ = reader.read_exact(&mut body_buf);

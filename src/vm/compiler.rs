@@ -162,7 +162,9 @@ impl Compiler {
                     }
                 }
             }
-            // друк обробляється через Expression::Call
+            Statement::Declaration(decl) => {
+                self.compile_declaration(decl);
+            }
             _ => {}
         }
     }
