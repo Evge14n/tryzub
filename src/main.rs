@@ -207,13 +207,53 @@ fn run_file(file: PathBuf, args: Vec<String>) -> Result<()> {
     let source = fs::read_to_string(&file)
         .map_err(|e| anyhow::anyhow!("Не вдалося прочитати файл {:?}: {}", file, e))?;
 
-    let tokens = tryzub_lexer::tokenize(&source)
+    let has_main = source.contains("функція головна(") || source.contains("функція головна (");
+    let effective_source = if has_main {
+        source.clone()
+    } else {
+        let mut funcs = String::new();
+        let mut top_level = String::new();
+        for line in source.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("функція ") || trimmed.starts_with("тип ") ||
+               trimmed.starts_with("трейт ") || trimmed.starts_with("реалізація ") ||
+               trimmed.starts_with("структура ") || trimmed.starts_with("тест ") ||
+               trimmed.starts_with("імпорт ") {
+                funcs.push_str(line);
+                funcs.push('\n');
+                let mut brace_count: i32 = line.chars().filter(|c| *c == '{').count() as i32
+                    - line.chars().filter(|c| *c == '}').count() as i32;
+                if brace_count > 0 {
+                    let remaining_lines: Vec<&str> = source.lines().collect();
+                    let current_idx = remaining_lines.iter().position(|l| std::ptr::eq(*l, line));
+                    if let Some(idx) = current_idx {
+                        for next_line in &remaining_lines[idx+1..] {
+                            funcs.push_str(next_line);
+                            funcs.push('\n');
+                            brace_count += next_line.chars().filter(|c| *c == '{').count() as i32;
+                            brace_count -= next_line.chars().filter(|c| *c == '}').count() as i32;
+                            if brace_count <= 0 { break; }
+                        }
+                    }
+                }
+            } else if !trimmed.is_empty() && !trimmed.starts_with("//") && !trimmed.starts_with("}") {
+                top_level.push_str(line);
+                top_level.push('\n');
+            }
+        }
+        if top_level.trim().is_empty() {
+            source.clone()
+        } else {
+            format!("{}\nфункція головна() {{\n{}\n}}", funcs, top_level)
+        }
+    };
+
+    let tokens = tryzub_lexer::tokenize(&effective_source)
         .map_err(|e| anyhow::anyhow!("Помилка лексичного аналізу: {}", e))?;
 
     let ast = tryzub_parser::parse(tokens)
         .map_err(|e| anyhow::anyhow!("Помилка синтаксичного аналізу: {}", e))?;
 
-    // Додаємо директорію файлу до шляхів пошуку модулів
     let mut vm = tryzub_vm::VM::new();
     if let Some(parent) = file.parent() {
         vm.add_module_path(parent.to_string_lossy().to_string());
