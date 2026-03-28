@@ -353,6 +353,8 @@ pub struct VM {
     default_jwt_secret: String,
     /// Індекс для швидкого векторного пошуку
     vector_index: Option<Vec<(usize, Vec<f64>)>>,
+    /// Відстеження виділеної пам'яті (адреса → layout)
+    allocations: HashMap<usize, std::alloc::Layout>,
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -611,6 +613,14 @@ impl VM {
             });
             scope.set("Успіх".to_string(), Value::BuiltinFn("Успіх".to_string()));
             scope.set("Помилка".to_string(), Value::BuiltinFn("Помилка".to_string()));
+
+            // Системне програмування
+            for name in &["зовнішня_бібліотека", "зовнішній_виклик",
+                "виділити_пам'ять", "звільнити_пам'ять",
+                "записати_байт", "прочитати_байт", "записати_слово", "прочитати_слово",
+                "розмір_вказівника", "asm_виконати", "системний_виклик"] {
+                scope.set(name.to_string(), Value::BuiltinFn(name.to_string()));
+            }
         }
 
         Self {
@@ -645,6 +655,7 @@ impl VM {
                 (0..64).map(|_| format!("{:02x}", rng.gen::<u8>())).collect()
             },
             vector_index: None,
+            allocations: HashMap::new(),
         }
     }
 
@@ -5148,6 +5159,202 @@ except Exception as e:
                     Err(anyhow::anyhow!("Невідома функція: {}", name))
                 }
             }
+            // ── Системне програмування ──
+
+            // FFI: завантажити бібліотеку
+            "зовнішня_бібліотека" => {
+                let path = args.first().map(|v| v.to_display_string())
+                    .ok_or_else(|| anyhow::anyhow!("зовнішня_бібліотека(шлях)"))?;
+                let lib = unsafe { libloading::Library::new(&path) }
+                    .map_err(|e| anyhow::anyhow!("Не вдалось завантажити {}: {}", path, e))?;
+                let ptr = Box::into_raw(Box::new(lib)) as usize;
+                Ok(Value::Integer(ptr as i64))
+            }
+
+            // FFI: викликати C функцію
+            "зовнішній_виклик" => {
+                if args.len() < 3 {
+                    return Err(anyhow::anyhow!("зовнішній_виклик(бібліотека, ім_я_функції, аргументи)"));
+                }
+                let lib_ptr = match &args[0] {
+                    Value::Integer(p) => *p as usize,
+                    _ => return Err(anyhow::anyhow!("Перший аргумент — вказівник на бібліотеку")),
+                };
+                let fn_name = args[1].to_display_string();
+                let lib = unsafe { &*(lib_ptr as *const libloading::Library) };
+
+                let call_args: Vec<i64> = args[2..].iter().map(|v| match v {
+                    Value::Integer(n) => *n,
+                    Value::Float(f) => *f as i64,
+                    Value::Bool(b) => *b as i64,
+                    _ => 0,
+                }).collect();
+
+                unsafe {
+                    match call_args.len() {
+                        0 => {
+                            let f: libloading::Symbol<unsafe extern "C" fn() -> i64> = lib.get(fn_name.as_bytes())
+                                .map_err(|e| anyhow::anyhow!("Функція '{}' не знайдена: {}", fn_name, e))?;
+                            Ok(Value::Integer(f()))
+                        }
+                        1 => {
+                            let f: libloading::Symbol<unsafe extern "C" fn(i64) -> i64> = lib.get(fn_name.as_bytes())
+                                .map_err(|e| anyhow::anyhow!("Функція '{}' не знайдена: {}", fn_name, e))?;
+                            Ok(Value::Integer(f(call_args[0])))
+                        }
+                        2 => {
+                            let f: libloading::Symbol<unsafe extern "C" fn(i64, i64) -> i64> = lib.get(fn_name.as_bytes())
+                                .map_err(|e| anyhow::anyhow!("Функція '{}' не знайдена: {}", fn_name, e))?;
+                            Ok(Value::Integer(f(call_args[0], call_args[1])))
+                        }
+                        3 => {
+                            let f: libloading::Symbol<unsafe extern "C" fn(i64, i64, i64) -> i64> = lib.get(fn_name.as_bytes())
+                                .map_err(|e| anyhow::anyhow!("Функція '{}' не знайдена: {}", fn_name, e))?;
+                            Ok(Value::Integer(f(call_args[0], call_args[1], call_args[2])))
+                        }
+                        _ => Err(anyhow::anyhow!("FFI підтримує до 3 аргументів"))
+                    }
+                }
+            }
+
+            // Пам'ять: виділити
+            "виділити_пам'ять" => {
+                let size = match args.first() {
+                    Some(Value::Integer(n)) => *n as usize,
+                    _ => return Err(anyhow::anyhow!("виділити_пам'ять(розмір)")),
+                };
+                let layout = std::alloc::Layout::from_size_align(size, 8)
+                    .map_err(|_| anyhow::anyhow!("Невірний розмір: {}", size))?;
+                let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+                if ptr.is_null() {
+                    Err(anyhow::anyhow!("Не вдалось виділити {} байт", size))
+                } else {
+                    self.allocations.insert(ptr as usize, layout);
+                    Ok(Value::Integer(ptr as usize as i64))
+                }
+            }
+
+            // Пам'ять: звільнити
+            "звільнити_пам'ять" => {
+                let addr = match args.first() {
+                    Some(Value::Integer(n)) => *n as usize,
+                    _ => return Err(anyhow::anyhow!("звільнити_пам'ять(адреса)")),
+                };
+                if let Some(layout) = self.allocations.remove(&addr) {
+                    unsafe { std::alloc::dealloc(addr as *mut u8, layout); }
+                    Ok(Value::Bool(true))
+                } else {
+                    Err(anyhow::anyhow!("Невідома адреса: 0x{:x}", addr))
+                }
+            }
+
+            // Пам'ять: записати байт
+            "записати_байт" => {
+                let addr = match args.get(0) { Some(Value::Integer(n)) => *n as usize, _ => return Err(anyhow::anyhow!("записати_байт(адреса, значення)")) };
+                let val = match args.get(1) { Some(Value::Integer(n)) => *n as u8, _ => return Err(anyhow::anyhow!("записати_байт(адреса, значення)")) };
+                unsafe { *(addr as *mut u8) = val; }
+                Ok(Value::Null)
+            }
+
+            // Пам'ять: прочитати байт
+            "прочитати_байт" => {
+                let addr = match args.first() { Some(Value::Integer(n)) => *n as usize, _ => return Err(anyhow::anyhow!("прочитати_байт(адреса)")) };
+                let val = unsafe { *(addr as *const u8) };
+                Ok(Value::Integer(val as i64))
+            }
+
+            // Пам'ять: записати i64
+            "записати_слово" => {
+                let addr = match args.get(0) { Some(Value::Integer(n)) => *n as usize, _ => return Err(anyhow::anyhow!("записати_слово(адреса, значення)")) };
+                let val = match args.get(1) { Some(Value::Integer(n)) => *n, _ => return Err(anyhow::anyhow!("записати_слово(адреса, значення)")) };
+                unsafe { *(addr as *mut i64) = val; }
+                Ok(Value::Null)
+            }
+
+            // Пам'ять: прочитати i64
+            "прочитати_слово" => {
+                let addr = match args.first() { Some(Value::Integer(n)) => *n as usize, _ => return Err(anyhow::anyhow!("прочитати_слово(адреса)")) };
+                let val = unsafe { *(addr as *const i64) };
+                Ok(Value::Integer(val))
+            }
+
+            // Пам'ять: розмір вказівника
+            "розмір_вказівника" => {
+                Ok(Value::Integer(std::mem::size_of::<usize>() as i64))
+            }
+
+            // Inline assembly (x86_64)
+            "asm_виконати" => {
+                let code = args.first().map(|v| v.to_display_string())
+                    .ok_or_else(|| anyhow::anyhow!("асемблер(\"інструкція\")"))?;
+                #[cfg(target_arch = "x86_64")]
+                {
+                    let mut result: i64 = 0;
+                    unsafe {
+                        match code.trim() {
+                            "nop" => { std::arch::asm!("nop"); }
+                            "cpuid" => {
+                                let mut eax: u32;
+                                std::arch::asm!(
+                                    "push rbx",
+                                    "cpuid",
+                                    "pop rbx",
+                                    inout("eax") 0u32 => eax,
+                                    out("ecx") _,
+                                    out("edx") _,
+                                );
+                                result = eax as i64;
+                            }
+                            "rdtsc" => {
+                                let lo: u32; let hi: u32;
+                                std::arch::asm!("rdtsc", out("eax") lo, out("edx") hi);
+                                result = ((hi as i64) << 32) | lo as i64;
+                            }
+                            "pause" => { std::arch::asm!("pause"); }
+                            "mfence" => { std::arch::asm!("mfence"); }
+                            "lfence" => { std::arch::asm!("lfence"); }
+                            "sfence" => { std::arch::asm!("sfence"); }
+                            _ => return Err(anyhow::anyhow!(
+                                "Підтримані інструкції: nop, cpuid, rdtsc, pause, mfence, lfence, sfence"
+                            )),
+                        }
+                    }
+                    Ok(Value::Integer(result))
+                }
+                #[cfg(not(target_arch = "x86_64"))]
+                {
+                    Err(anyhow::anyhow!("Inline assembly підтримується тільки на x86_64"))
+                }
+            }
+
+            // Системний виклик (syscall)
+            "системний_виклик" => {
+                #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+                {
+                    let num = match args.get(0) { Some(Value::Integer(n)) => *n as u64, _ => return Err(anyhow::anyhow!("системний_виклик(номер, ...)")) };
+                    let a1 = args.get(1).map(|v| match v { Value::Integer(n) => *n as u64, _ => 0 }).unwrap_or(0);
+                    let a2 = args.get(2).map(|v| match v { Value::Integer(n) => *n as u64, _ => 0 }).unwrap_or(0);
+                    let a3 = args.get(3).map(|v| match v { Value::Integer(n) => *n as u64, _ => 0 }).unwrap_or(0);
+                    let ret: u64;
+                    unsafe {
+                        std::arch::asm!(
+                            "syscall",
+                            inout("rax") num => ret,
+                            in("rdi") a1,
+                            in("rsi") a2,
+                            in("rdx") a3,
+                            out("rcx") _,
+                            out("r11") _,
+                        );
+                    }
+                    Ok(Value::Integer(ret as i64))
+                }
+                #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+                {
+                    Err(anyhow::anyhow!("системний_виклик доступний тільки на Linux x86_64"))
+                }
+            }
+
             _ => Err(anyhow::anyhow!("Невідома вбудована функція: {}", name))
         }
     }
