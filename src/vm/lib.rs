@@ -1882,14 +1882,12 @@ impl VM {
                         }
                     }
 
-                    // Очищуємо старі записи rate limit кожні 100 запитів
                     if rate_limits.len() > 1000 {
                         rate_limits.retain(|_, (_, t)| t.elapsed() < rate_limit_window);
                     }
 
                     let mut reader = BufReader::new(stream.try_clone().map_err(|e| anyhow::anyhow!("TCP clone: {}", e))?);
 
-                    // Читаємо першу лінію: GET /path HTTP/1.1
                     let mut request_line = String::new();
                     if reader.read_line(&mut request_line).is_err() { continue; }
                     let parts: Vec<&str> = request_line.trim().split_whitespace().collect();
@@ -1903,11 +1901,9 @@ impl VM {
                     } else {
                         (full_path, None)
                     };
-                    // URL decode для кирилиці
                     let decoded_path = Self::url_decode_path(raw_path);
                     let path = decoded_path.as_str();
 
-                    // Читаємо заголовки
                     let mut headers = HashMap::new();
                     let mut content_length: usize = 0;
                     loop {
@@ -1924,12 +1920,28 @@ impl VM {
                     let accept_encoding_gzip = headers.get("accept-encoding")
                         .map(|v| v.contains("gzip")).unwrap_or(false);
 
+                    // Thread pool: статичні файли обробляємо в окремому потоці
+                    let has_ext = path.rfind('.').map(|i| i > path.rfind('/').unwrap_or(0)).unwrap_or(false);
+                    let is_static_candidate = method == "GET" && routes.static_dir.is_some() && has_ext
+                        && !path.contains("..") && !path.contains('\0')
+                        && routes.find_route(method, path).is_none();
+
+                    if is_static_candidate {
+                        let static_dir = routes.static_dir.as_ref().unwrap().clone();
+                        let path_owned = path.to_string();
+                        std::thread::spawn(move || {
+                            Self::serve_static_threaded(stream, &path_owned, &static_dir, accept_encoding_gzip);
+                        });
+                        continue;
+                    }
+
                     let mut body_str = String::new();
                     let mut body_buf: Vec<u8> = Vec::new();
                     if content_length > 0 {
                         body_buf = vec![0u8; content_length];
                         let _ = reader.read_exact(&mut body_buf);
-                        body_str = String::from_utf8_lossy(&body_buf).to_string();
+                        body_str = String::from_utf8(body_buf.clone())
+                            .unwrap_or_else(|_| base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &body_buf));
                     }
 
                     // Парсимо query string
@@ -2202,6 +2214,47 @@ impl VM {
             i += 1;
         }
         String::from_utf8(result).unwrap_or_else(|_| input.to_string())
+    }
+
+    fn serve_static_threaded(mut stream: std::net::TcpStream, path: &str, static_dir: &str, gzip: bool) {
+        use std::io::Write;
+        let file_path = format!("{}{}", static_dir, path);
+        let (status, body_bytes, mime) = if let Ok(content) = std::fs::read(&file_path) {
+            let mime = Self::guess_mime(&file_path);
+            (200, content, mime)
+        } else {
+            (404, b"<html><body><h1>404</h1></body></html>".to_vec(), "text/html; charset=utf-8".to_string())
+        };
+
+        let final_body = if gzip && body_bytes.len() > 1024 {
+            use flate2::write::GzEncoder;
+            use flate2::Compression;
+            let mut enc = GzEncoder::new(Vec::new(), Compression::fast());
+            let _ = enc.write_all(&body_bytes);
+            if let Ok(compressed) = enc.finish() {
+                let header = format!(
+                    "HTTP/1.1 {} OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nContent-Encoding: gzip\r\n\
+                     Cache-Control: public, max-age=86400\r\nConnection: close\r\n\r\n",
+                    status, mime, compressed.len()
+                );
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(&compressed);
+                let _ = stream.flush();
+                return;
+            }
+            body_bytes
+        } else {
+            body_bytes
+        };
+
+        let header = format!(
+            "HTTP/1.1 {} OK\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
+             Cache-Control: public, max-age=86400\r\nConnection: close\r\n\r\n",
+            status, mime, final_body.len()
+        );
+        let _ = stream.write_all(header.as_bytes());
+        let _ = stream.write_all(&final_body);
+        let _ = stream.flush();
     }
 
     fn guess_mime(path: &str) -> String {
