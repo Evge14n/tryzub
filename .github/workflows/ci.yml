@@ -39,6 +39,10 @@ jobs:
           target/
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+    - name: Встановити pkg-config (macOS)
+      if: runner.os == 'macOS'
+      run: brew install pkg-config
+
     - name: Збірка
       run: cargo build --verbose -p tryzub-lexer -p tryzub-parser -p tryzub-vm
 
