@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Тризуб Playground</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, sans-serif; background: #1e1e2e; color: #cdd6f4; min-height: 100vh; }
+header { background: #0057b7; color: white; padding: 12px 20px; display: flex; align-items: center; gap: 15px; }
+header h1 { font-size: 1.3em; }
+.flag { font-size: 1.5em; }
+main { display: grid; grid-template-columns: 1fr 1fr; height: calc(100vh - 52px); }
+.editor-panel, .output-panel { display: flex; flex-direction: column; }
+.panel-header { background: #313244; padding: 8px 15px; font-size: 0.85em; display: flex; justify-content: space-between; align-items: center; }
+textarea { flex: 1; background: #1e1e2e; color: #cdd6f4; border: none; padding: 15px; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 14px; resize: none; outline: none; tab-size: 4; }
+.output { flex: 1; background: #11111b; padding: 15px; font-family: monospace; font-size: 14px; overflow-y: auto; white-space: pre-wrap; }
+.output .error { color: #f38ba8; }
+.output .success { color: #a6e3a1; }
+button { background: #ffd700; color: #1e1e2e; border: none; padding: 6px 20px; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 0.9em; }
+button:hover { background: #ffed4a; }
+.examples { display: flex; gap: 8px; }
+.examples a { color: #89b4fa; cursor: pointer; font-size: 0.8em; text-decoration: underline; }
+@media (max-width: 768px) { main { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; } }
+</style>
+</head>
+<body>
+<header>
+<span class="flag">🇺🇦</span>
+<h1>Тризуб Playground</h1>
+<div class="examples">
+<a onclick="loadExample('hello')">Привіт</a>
+<a onclick="loadExample('fibonacci')">Фібоначчі</a>
+<a onclick="loadExample('pattern')">Зіставлення</a>
+</div>
+<button onclick="runCode()">Запустити</button>
+</header>
+<main>
+<div class="editor-panel">
+<div class="panel-header"><span>Код</span></div>
+<textarea id="code" spellcheck="false">// Тризуб Playground
+функція факторіал(n) {
+    якщо (n <= 1) { повернути 1 }
+    повернути n * факторіал(n - 1)
+}
+
+функція головна() {
+    для (і в 1..11) {
+        друк(ціле_в_рядок(і) + "! = " + ціле_в_рядок(факторіал(і)))
+    }
+}</textarea>
+</div>
+<div class="output-panel">
+<div class="panel-header"><span>Вивід</span><span id="time"></span></div>
+<div class="output" id="output"><span class="success">Натисніть "Запустити" або Ctrl+Enter</span></div>
+</div>
+</main>
+<script>
+const examples = {
+    hello: `функція головна() {\n    друк("Привіт, Тризуб! 🇺🇦")\n    друк("Версія 8.0")\n}`,
+    fibonacci: `функція фіб(n) {\n    якщо (n <= 1) { повернути n }\n    повернути фіб(n - 1) + фіб(n - 2)\n}\n\nфункція головна() {\n    для (і в 0..15) {\n        друк(фіб(і))\n    }\n}`,
+    pattern: `структура Точка {\n    х: ціле,\n    у: ціле\n}\n\nфункція відстань(т) {\n    повернути корінь(т.х * т.х + т.у * т.у)\n}\n\nфункція головна() {\n    змінна п = Точка { х: 3, у: 4 }\n    друк("Відстань: ")\n    друк(відстань(п))\n}`
+};
+
+function loadExample(name) {
+    document.getElementById('code').value = examples[name] || '';
+}
+
+function runCode() {
+    const output = document.getElementById('output');
+    output.innerHTML = '<span class="success">Виконання... (потрібен бекенд сервер)</span>\n\nЦе демо-playground. Для запуску коду встановіть Тризуб:\n  cargo install --path .\n  тризуб запустити файл.тризуб';
+}
+
+document.getElementById('code').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && e.ctrlKey) { runCode(); e.preventDefault(); }
+    if (e.key === 'Tab') {
+        e.preventDefault();
+        const s = this.selectionStart;
+        this.value = this.value.substring(0, s) + '    ' + this.value.substring(this.selectionEnd);
+        this.selectionStart = this.selectionEnd = s + 4;
+    }
+});
+</script>
+</body>
+</html>
