@@ -329,8 +329,12 @@ pub struct VM {
     continue_flag: bool,
     /// Зареєстровані типи enum
     enum_types: HashMap<String, Vec<EnumVariant>>,
-    /// Зареєстровані трейти
+    /// Зареєстровані трейти: (тип, метод) → тіло
     trait_methods: HashMap<(String, String), Vec<Statement>>,
+    /// Визначення трейтів: ім'я трейту → методи (для default methods)
+    trait_definitions: HashMap<String, Vec<tryzub_parser::TraitMethod>>,
+    /// Які типи реалізують які трейти: (тип, трейт) → true
+    trait_impls: HashMap<(String, String), bool>,
     /// Контракти функцій
     contracts: HashMap<String, Contract>,
     /// Стек обробників ефектів: ім'я_обробника → Environment з обробником
@@ -677,6 +681,8 @@ impl VM {
             continue_flag: false,
             enum_types: HashMap::new(),
             trait_methods: HashMap::new(),
+            trait_definitions: HashMap::new(),
+            trait_impls: HashMap::new(),
             contracts: HashMap::new(),
             yielded_values: Vec::new(),
             async_queue: Vec::new(),
@@ -794,10 +800,66 @@ impl VM {
                 }
                 self.enum_types.insert(name, variants);
             }
-            Declaration::Trait { .. } => {
-                // Трейти зберігаються для перевірки типів
+            Declaration::Trait { name, methods, .. } => {
+                self.trait_definitions.insert(name, methods);
             }
-            Declaration::TraitImpl { for_type, methods, .. } |
+            Declaration::TraitImpl { trait_name, for_type, methods, .. } => {
+                // Зберігаємо що тип реалізує трейт
+                self.trait_impls.insert((for_type.clone(), trait_name.clone()), true);
+
+                // Зберігаємо реалізовані методи
+                let mut implemented: HashSet<String> = HashSet::new();
+                for method in methods {
+                    if let Declaration::Function { name, generic_params, params, body, .. } = method {
+                        implemented.insert(name.clone());
+                        let func = Value::Function {
+                            name: Some(name.clone()),
+                            generic_params,
+                            params,
+                            body: body.clone(),
+                            closure: self.current_env.clone(),
+                        };
+                        self.current_env.borrow_mut().set(
+                            format!("{}::{}", for_type, name), func.clone()
+                        );
+                        self.trait_methods.insert(
+                            (for_type.clone(), name), body
+                        );
+                    }
+                }
+
+                // Default methods — якщо трейт має default_body а реалізація не перевизначила
+                if let Some(trait_defs) = self.trait_definitions.get(&trait_name).cloned() {
+                    for tm in &trait_defs {
+                        if !implemented.contains(&tm.name) {
+                            if let Some(ref default_body) = tm.default_body {
+                                let mut params = Vec::new();
+                                if tm.has_self {
+                                    params.push(Parameter {
+                                        name: "себе".to_string(),
+                                        ty: Type::SelfType,
+                                        default: None,
+                                    });
+                                }
+                                params.extend(tm.params.clone());
+                                let func = Value::Function {
+                                    name: Some(tm.name.clone()),
+                                    generic_params: vec![],
+                                    params,
+                                    body: default_body.clone(),
+                                    closure: self.current_env.clone(),
+                                };
+                                self.current_env.borrow_mut().set(
+                                    format!("{}::{}", for_type, tm.name), func
+                                );
+                                self.trait_methods.insert(
+                                    (for_type.clone(), tm.name.clone()), default_body.clone()
+                                );
+                            }
+                        }
+                    }
+                }
+            }
             Declaration::Impl { type_name: for_type, methods } => {
                 for method in methods {
                     if let Declaration::Function { name, generic_params, params, body, .. } = method {
@@ -808,7 +870,6 @@ impl VM {
                             body: body.clone(),
                             closure: self.current_env.clone(),
                         };
-                        // Зберігаємо як тип::метод
                         self.current_env.borrow_mut().set(
                             format!("{}::{}", for_type, name), func.clone()
                         );
@@ -1165,7 +1226,24 @@ impl VM {
             Expression::Binary { left, op, right } => {
                 let lhs = self.evaluate_expression(*left)?;
                 let rhs = self.evaluate_expression(*right)?;
-                self.apply_binary_op(op, lhs, rhs)
+                match self.apply_binary_op(op.clone(), lhs.clone(), rhs.clone()) {
+                    Ok(result) => Ok(result),
+                    Err(_) => {
+                        // Operator overloading — шукаємо трейт-метод
+                        let method_name = match op {
+                            BinaryOp::Add => "додати",
+                            BinaryOp::Sub => "відняти",
+                            BinaryOp::Mul => "помножити",
+                            BinaryOp::Div => "поділити",
+                            BinaryOp::Eq => "дорівнює",
+                            BinaryOp::Lt => "менше",
+                            BinaryOp::Gt => "більше",
+                            _ => return Err(anyhow::anyhow!("Несумісні типи для операції {:?}: {} та {}",
+                                op, lhs.type_name(), rhs.type_name())),
+                        };
+                        self.call_method(lhs, method_name, vec![rhs])
+                    }
+                }
             }
             Expression::Unary { op, operand } => {
                 let val = self.evaluate_expression(*operand)?;
@@ -1397,7 +1475,12 @@ impl VM {
                 self.current_env = Rc::new(RefCell::new(Scope::new(Some(closure))));
 
                 for (i, param) in params.iter().enumerate() {
-                    if param.name == "себе" { continue; }
+                    if param.name == "себе" {
+                        if let Some(self_val) = args.get(i) {
+                            self.current_env.borrow_mut().set("себе".to_string(), self_val.clone());
+                        }
+                        continue;
+                    }
                     let val = if let Some(arg) = args.get(i) {
                         arg.clone()
                     } else if let Some(ref default_expr) = param.default {
