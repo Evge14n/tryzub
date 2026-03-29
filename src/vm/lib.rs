@@ -302,6 +302,14 @@ impl Scope {
             Err(anyhow::anyhow!("Змінна '{}' не знайдена", name))
         }
     }
+
+    fn all_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.variables.keys().cloned().collect();
+        if let Some(parent) = &self.parent {
+            names.extend(parent.borrow().all_names());
+        }
+        names
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -356,6 +364,8 @@ pub struct VM {
     vector_index: Option<Vec<(usize, Vec<f64>)>>,
     /// Відстеження виділеної пам'яті (адреса → layout)
     allocations: HashMap<usize, std::alloc::Layout>,
+    /// Call stack для stack traces
+    call_stack: Vec<String>,
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -483,6 +493,9 @@ impl VM {
             scope.set("обернути".to_string(), Value::BuiltinFn("обернути".to_string()));
             scope.set("додати".to_string(), Value::BuiltinFn("додати".to_string()));
             scope.set("паніка".to_string(), Value::BuiltinFn("паніка".to_string()));
+            scope.set("перевірити_рівне".to_string(), Value::BuiltinFn("перевірити_рівне".to_string()));
+            scope.set("перевірити_не_рівне".to_string(), Value::BuiltinFn("перевірити_не_рівне".to_string()));
+            scope.set("перевірити_помилку".to_string(), Value::BuiltinFn("перевірити_помилку".to_string()));
             scope.set("словник".to_string(), Value::BuiltinFn("словник".to_string()));
             scope.set("множина".to_string(), Value::BuiltinFn("множина".to_string()));
             scope.set("виконати_ефект".to_string(), Value::BuiltinFn("виконати_ефект".to_string()));
@@ -673,6 +686,7 @@ impl VM {
             },
             vector_index: None,
             allocations: HashMap::new(),
+            call_stack: Vec::new(),
         }
     }
 
@@ -1052,7 +1066,15 @@ impl VM {
             Expression::Literal(lit) => Ok(self.evaluate_literal(lit)),
             Expression::Identifier(name) => {
                 self.current_env.borrow().get(&name)
-                    .ok_or_else(|| anyhow::anyhow!("Невідома змінна або функція: {}", name))
+                    .ok_or_else(|| {
+                        let known = self.current_env.borrow().all_names();
+                        let suggestion = Self::find_similar(&name, &known);
+                        let hint = if let Some(s) = suggestion {
+                            format!(". Можливо ви мали на увазі '{}'?", s)
+                        } else { String::new() };
+                        let trace = self.format_stack_trace();
+                        anyhow::anyhow!("Невідома змінна або функція: '{}'{}\n{}", name, hint, trace)
+                    })
             }
             Expression::SelfRef => {
                 self.current_env.borrow().get("себе")
@@ -1280,6 +1302,7 @@ impl VM {
                     }
                 }
 
+                self.call_stack.push(func_name.clone());
                 let prev_env = self.current_env.clone();
                 self.current_env = Rc::new(RefCell::new(Scope::new(Some(closure))));
 
@@ -1341,6 +1364,7 @@ impl VM {
 
                 self.return_value = prev_return;
                 self.current_env = prev_env;
+                self.call_stack.pop();
 
                 // Зберігаємо в кеш якщо функція чиста
                 if self.pure_functions.contains(&func_name) {
@@ -2842,6 +2866,46 @@ impl VM {
         Ok(())
     }
 
+    fn find_similar(target: &str, candidates: &[String]) -> Option<String> {
+        let mut best: Option<(usize, &str)> = None;
+        for c in candidates {
+            if c.starts_with('_') || c.len() < 2 { continue; }
+            let dist = Self::levenshtein(target, c);
+            let threshold = (target.chars().count() / 2).max(2);
+            if dist <= threshold {
+                if best.is_none() || dist < best.unwrap().0 {
+                    best = Some((dist, c));
+                }
+            }
+        }
+        best.map(|(_, s)| s.to_string())
+    }
+
+    fn levenshtein(a: &str, b: &str) -> usize {
+        let a: Vec<char> = a.chars().collect();
+        let b: Vec<char> = b.chars().collect();
+        let (m, n) = (a.len(), b.len());
+        let mut dp = vec![vec![0usize; n + 1]; m + 1];
+        for i in 0..=m { dp[i][0] = i; }
+        for j in 0..=n { dp[0][j] = j; }
+        for i in 1..=m {
+            for j in 1..=n {
+                let cost = if a[i-1] == b[j-1] { 0 } else { 1 };
+                dp[i][j] = (dp[i-1][j] + 1).min(dp[i][j-1] + 1).min(dp[i-1][j-1] + cost);
+            }
+        }
+        dp[m][n]
+    }
+
+    fn format_stack_trace(&self) -> String {
+        if self.call_stack.is_empty() { return String::new(); }
+        let mut trace = String::from("  Стек викликів:\n");
+        for (i, name) in self.call_stack.iter().rev().enumerate() {
+            trace.push_str(&format!("    {}. {}()\n", i, name));
+        }
+        trace
+    }
+
     fn check_memory_access(&self, addr: usize, size: usize) -> Result<()> {
         for (&base, layout) in &self.allocations {
             if addr >= base && addr + size <= base + layout.size() {
@@ -2943,7 +3007,40 @@ impl VM {
             }
             "паніка" => {
                 let msg = args.first().map(|v| v.to_display_string()).unwrap_or_default();
-                Err(anyhow::anyhow!("Паніка: {}", msg))
+                let trace = self.format_stack_trace();
+                Err(anyhow::anyhow!("Паніка: {}\n{}", msg, trace))
+            }
+            "перевірити_рівне" => {
+                if args.len() < 2 { return Err(anyhow::anyhow!("перевірити_рівне(очікуване, фактичне)")); }
+                let expected = args[0].to_display_string();
+                let actual = args[1].to_display_string();
+                if expected != actual {
+                    let msg = if args.len() > 2 { args[2].to_display_string() } else { String::new() };
+                    let trace = self.format_stack_trace();
+                    return Err(anyhow::anyhow!("Перевірка рівності не пройшла{}: очікувалось '{}', отримано '{}'\n{}",
+                        if msg.is_empty() { String::new() } else { format!(" ({})", msg) }, expected, actual, trace));
+                }
+                Ok(Value::Bool(true))
+            }
+            "перевірити_не_рівне" => {
+                if args.len() < 2 { return Err(anyhow::anyhow!("перевірити_не_рівне(а, б)")); }
+                let a = args[0].to_display_string();
+                let b = args[1].to_display_string();
+                if a == b {
+                    let trace = self.format_stack_trace();
+                    return Err(anyhow::anyhow!("Перевірка нерівності не пройшла: обидва '{}'\n{}", a, trace));
+                }
+                Ok(Value::Bool(true))
+            }
+            "перевірити_помилку" => {
+                if let Some(func) = args.first() {
+                    let result = self.call_value(func.clone(), vec![]);
+                    if result.is_ok() {
+                        return Err(anyhow::anyhow!("Очікувалась помилка, але функція виконалась успішно"));
+                    }
+                    return Ok(Value::Bool(true));
+                }
+                Err(anyhow::anyhow!("перевірити_помилку(функція)"))
             }
 
             // ── Опція/Результат конструктори ──
