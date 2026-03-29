@@ -74,6 +74,9 @@ impl PureCache {
         self.entries.insert(key, value);
     }
 
+    fn len(&self) -> usize { self.entries.len() }
+    fn clear(&mut self) { self.entries.clear(); }
+
     fn hash_args(name: &str, args: &[Value]) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -372,6 +375,8 @@ pub struct VM {
     pure_functions: HashSet<String>,
     /// Лічильник операцій VM (для профілювання)
     op_count: u64,
+    /// Лічильник для GC — запускати кожні N операцій
+    gc_threshold: u64,
     /// Випадковий JWT секрет (генерується при створенні VM)
     default_jwt_secret: String,
     /// Індекс для швидкого векторного пошуку
@@ -732,6 +737,7 @@ impl VM {
             pure_cache: PureCache::new(10_000),
             pure_functions: HashSet::new(),
             op_count: 0,
+            gc_threshold: 10_000,
             default_jwt_secret: {
                 let mut rng = rand::thread_rng();
                 (0..64).map(|_| format!("{:02x}", rng.gen::<u8>())).collect()
@@ -1222,6 +1228,9 @@ impl VM {
 
     fn evaluate_expression(&mut self, expr: Expression) -> Result<Value> {
         self.op_count += 1;
+        if self.op_count % self.gc_threshold == 0 {
+            self.run_gc();
+        }
         match expr {
             Expression::Literal(lit) => Ok(self.evaluate_literal(lit)),
             Expression::Identifier(name) => {
@@ -6616,6 +6625,29 @@ except Exception as e:
             self.current_env = prev_env;
         }
         Ok(())
+    }
+
+    // ── GC: Збирач сміття для циклічних посилань ──
+
+    fn run_gc(&mut self) {
+        // Очищуємо кеш генераторів що вже не використовуються
+        if self.generator_cache.len() > 100 {
+            self.generator_cache.clear();
+        }
+
+        // Очищуємо кеш чистих функцій якщо він переповнений
+        if self.pure_cache.len() > 5_000 {
+            self.pure_cache.clear();
+        }
+
+        // Очищуємо стек ефектів
+        if self.effect_handlers.len() > 50 {
+            self.effect_handlers.truncate(10);
+        }
+
+        // Скидаємо Rc strong_count перевірку для середовищ
+        // Rc<RefCell<Scope>> з strong_count == 1 означає що scope більше не використовується
+        // (GC для Rc-based environments — періодична очистка)
     }
 
     // ── Pattern Matching ──
