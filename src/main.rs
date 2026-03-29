@@ -90,6 +90,15 @@ enum Commands {
         iterations: u64,
     },
 
+    /// Генерувати HTML документацію
+    #[command(name = "док")]
+    Doc {
+        #[arg(value_name = "ШЛЯХ")]
+        path: PathBuf,
+        #[arg(long = "вивід", default_value = "docs")]
+        output: PathBuf,
+    },
+
     /// Профілювання програми
     #[command(name = "профіль")]
     Profile {
@@ -189,6 +198,7 @@ fn main() {
         Commands::Lsp => run_lsp(),
         Commands::Format { file, check_only } => run_format(file, check_only),
         Commands::Lint { file } => run_lint(file),
+        Commands::Doc { path, output } => run_doc(path, output),
         Commands::Install { package } => run_install(package),
         Commands::Run { file, fast, jit, args } => run_file(file, fast, jit, args),
         Commands::Watch { file } => watch_file(file),
@@ -1693,4 +1703,80 @@ fn check_empty_catch(stmt: &tryzub_parser::Statement, fn_name: &str, warnings: &
         }
         _ => {}
     }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Генерація документації
+// ════════════════════════════════════════════════════════════════════
+
+fn run_doc(path: PathBuf, output: PathBuf) -> Result<()> {
+    fs::create_dir_all(&output)?;
+
+    let files: Vec<PathBuf> = if path.is_file() {
+        vec![path]
+    } else {
+        fs::read_dir(&path)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension().map_or(false, |ext| {
+                    ext == "тризуб" || ext == "tryzub"
+                })
+            })
+            .collect()
+    };
+
+    let mut html = String::from(r#"<!DOCTYPE html>
+<html lang="uk"><head><meta charset="UTF-8">
+<title>Тризуб — Документація</title>
+<style>
+body { font-family: -apple-system, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 20px; line-height: 1.6; color: #333; }
+h1 { color: #0057b7; border-bottom: 3px solid #ffd700; padding-bottom: 10px; }
+h2 { color: #0057b7; margin-top: 30px; }
+h3 { color: #444; }
+code { background: #f5f5f5; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+pre { background: #f5f5f5; padding: 15px; border-radius: 5px; overflow-x: auto; }
+.doc { color: #666; font-style: italic; margin-bottom: 5px; }
+.sig { font-weight: bold; font-family: monospace; font-size: 1.1em; }
+</style></head><body>
+<h1>Тризуб — Документація</h1>
+"#);
+
+    for file in &files {
+        let source = fs::read_to_string(file)?;
+        let filename = file.file_name().unwrap_or_default().to_string_lossy();
+        html.push_str(&format!("<h2>{}</h2>\n", filename));
+
+        let mut doc_comments: Vec<String> = Vec::new();
+        for line in source.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("///") {
+                doc_comments.push(trimmed[3..].trim().to_string());
+            } else if trimmed.starts_with("функція ") || trimmed.starts_with("публічний функція ") {
+                let sig = trimmed.split('{').next().unwrap_or(trimmed).trim();
+                if !doc_comments.is_empty() {
+                    html.push_str(&format!("<div class='doc'>{}</div>\n", doc_comments.join("<br>")));
+                }
+                html.push_str(&format!("<div class='sig'><code>{}</code></div>\n<br>\n", sig));
+                doc_comments.clear();
+            } else if trimmed.starts_with("структура ") {
+                let sig = trimmed.split('{').next().unwrap_or(trimmed).trim();
+                if !doc_comments.is_empty() {
+                    html.push_str(&format!("<div class='doc'>{}</div>\n", doc_comments.join("<br>")));
+                }
+                html.push_str(&format!("<div class='sig'><code>{}</code></div>\n<br>\n", sig));
+                doc_comments.clear();
+            } else if !trimmed.starts_with("//") {
+                doc_comments.clear();
+            }
+        }
+    }
+
+    html.push_str("</body></html>");
+
+    let out_file = output.join("index.html");
+    fs::write(&out_file, html)?;
+    println!("Документація згенерована: {}", out_file.display());
+    println!("Файлів оброблено: {}", files.len());
+    Ok(())
 }
