@@ -158,6 +158,8 @@ pub enum Value {
         to: i64,
         inclusive: bool,
     },
+    /// Модуль (namespace)
+    Module(String, HashMap<String, Value>),
     Null,
 }
 
@@ -239,6 +241,7 @@ impl Value {
             Value::BuiltinFn(name) => format!("<вбудована {}>", name),
             Value::CurriedBuiltin { name, .. } => format!("<каррінг {}>", name),
             Value::Generator { .. } => "<генератор>".to_string(),
+            Value::Module(name, _) => format!("<модуль {}>", name),
         }
     }
 
@@ -255,6 +258,7 @@ impl Value {
             Value::Set(_) => "множина",
             Value::Struct(name, _) => name,
             Value::EnumVariant { type_name, .. } => type_name,
+            Value::Module(..) => "модуль",
             Value::Null => "нуль",
             _ => "функція",
         }
@@ -340,8 +344,12 @@ pub struct VM {
     macros: HashMap<String, (Vec<String>, Vec<Statement>)>,
     /// Шляхи для пошуку stdlib модулів
     stdlib_paths: Vec<String>,
-    /// Вже завантажені модулі
+    /// Вже завантажені модулі (ім'я → Value::Module або true/false)
     loaded_modules: HashMap<String, bool>,
+    /// Збережені модулі: ім'я → Value::Module
+    module_values: HashMap<String, Value>,
+    /// Модулі що зараз завантажуються (для виявлення циклічних залежностей)
+    loading_modules: HashSet<String>,
     /// Кеш виконаних генераторів: id → (yielded_values, current_index)
     generator_cache: HashMap<usize, (Vec<Value>, usize)>,
     /// Лічильник ID для генераторів
@@ -674,11 +682,32 @@ impl VM {
             macros: HashMap::new(),
             effect_handlers: Vec::new(),
             registered_effects: HashMap::new(),
-            stdlib_paths: vec![
-                "stdlib".to_string(),
-                "../stdlib".to_string(),
-            ],
+            stdlib_paths: {
+                let mut paths = vec![
+                    "stdlib".to_string(),
+                    "../stdlib".to_string(),
+                ];
+                if let Ok(env_paths) = std::env::var("ТРИЗУБ_ШЛЯХ") {
+                    for p in env_paths.split(';') {
+                        let trimmed = p.trim();
+                        if !trimmed.is_empty() {
+                            paths.push(trimmed.to_string());
+                        }
+                    }
+                }
+                if let Ok(env_paths) = std::env::var("TRYZUB_PATH") {
+                    for p in env_paths.split(';') {
+                        let trimmed = p.trim();
+                        if !trimmed.is_empty() {
+                            paths.push(trimmed.to_string());
+                        }
+                    }
+                }
+                paths
+            },
             loaded_modules: HashMap::new(),
+            module_values: HashMap::new(),
+            loading_modules: HashSet::new(),
             generator_cache: HashMap::new(),
             generator_id_counter: 0,
             web_routes: None,
@@ -810,19 +839,62 @@ impl VM {
             Declaration::Benchmark { name: _, sizes: _, body: _ } => {
                 // Бенчмарки запускаються через `тризуб тестувати`
             }
-            Declaration::Import { path, .. } => {
-                // Реальний імпорт — шукаємо та завантажуємо модуль
+            Declaration::Import { path, items, alias } => {
                 let module_name = path.last().cloned().unwrap_or_default();
                 if !self.loaded_modules.contains_key(&module_name) {
                     self.load_module(&module_name)?;
+                }
+                // Визначаємо як зробити модуль доступним
+                if let Some(module_val) = self.module_values.get(&module_name).cloned() {
+                    if let Some(ref selected_items) = items {
+                        // імпорт модуль { а, б } — копіюємо вибрані символи в поточний scope
+                        if let Value::Module(_, ref members) = module_val {
+                            for item in selected_items {
+                                if let Some(val) = members.get(item) {
+                                    self.current_env.borrow_mut().set(item.clone(), val.clone());
+                                } else {
+                                    return Err(anyhow::anyhow!(
+                                        "Символ '{}' не знайдено в модулі '{}'", item, module_name
+                                    ));
+                                }
+                            }
+                        }
+                    } else if let Some(ref alias_name) = alias {
+                        // імпорт модуль як псевдонім
+                        self.current_env.borrow_mut().set(alias_name.clone(), module_val);
+                    } else {
+                        // імпорт модуль — реєструємо під іменем модуля
+                        self.current_env.borrow_mut().set(module_name.clone(), module_val);
+                    }
                 }
             }
             Declaration::Test { name: _, body: _ } => {
                 // Тести не виконуються при звичайному запуску —
                 // тільки через `тризуб тестувати`
             }
+            Declaration::Module { name, declarations, .. } => {
+                // Виконуємо оголошення модуля в ізольованому середовищі
+                let prev_env = self.current_env.clone();
+                let module_env = Rc::new(RefCell::new(Scope::new(Some(self.global_env.clone()))));
+                self.current_env = module_env.clone();
+
+                for decl in declarations {
+                    self.execute_declaration(decl)?;
+                }
+
+                let mut members = HashMap::new();
+                for (k, v) in &module_env.borrow().variables {
+                    members.insert(k.clone(), v.clone());
+                }
+
+                self.current_env = prev_env;
+
+                let module_val = Value::Module(name.clone(), members);
+                self.module_values.insert(name.clone(), module_val.clone());
+                self.current_env.borrow_mut().set(name, module_val);
+            }
             _ => {
-                // TypeAlias, Interface, FuzzTest, Benchmark, Macro — парсяться але не виконуються
+                // TypeAlias, Interface — парсяться але не виконуються
             }
         }
         Ok(())
@@ -1131,6 +1203,10 @@ impl VM {
             Expression::MemberAccess { object, member } => {
                 let obj = self.evaluate_expression(*object)?;
                 match &obj {
+                    Value::Module(_, members) => {
+                        members.get(&member).cloned()
+                            .ok_or_else(|| anyhow::anyhow!("Символ '{}' не знайдено в модулі", member))
+                    }
                     Value::Struct(_, fields) => {
                         fields.get(&member).cloned()
                             .ok_or_else(|| anyhow::anyhow!("Поле '{}' не знайдено", member))
@@ -1423,6 +1499,13 @@ impl VM {
     }
 
     fn call_method(&mut self, obj: Value, method: &str, args: Vec<Value>) -> Result<Value> {
+        // ── Виклик функції з модуля ──
+        if let Value::Module(ref mod_name, ref members) = obj {
+            if let Some(func) = members.get(method) {
+                return self.call_value(func.clone(), args);
+            }
+            return Err(anyhow::anyhow!("Функція '{}' не знайдена в модулі '{}'", method, mod_name));
+        }
         // ── Методи масивів ──
         if let Value::Array(ref arr) = obj {
             match method {
@@ -6103,14 +6186,22 @@ except Exception as e:
     }
 
     fn load_module(&mut self, name: &str) -> Result<()> {
+        // Перевірка циклічних залежностей
+        if self.loading_modules.contains(name) {
+            return Err(anyhow::anyhow!(
+                "Циклічна залежність: модуль '{}' вже завантажується.\n  Ланцюг: {} → {}",
+                name,
+                self.loading_modules.iter().cloned().collect::<Vec<_>>().join(" → "),
+                name
+            ));
+        }
+
         let filenames = [format!("{}.тризуб", name),
             format!("{}.tryzub", name)];
 
-        // Шукаємо у: 1) робоча директорія, 2) stdlib/, 3) ../stdlib/
         let mut search_paths = self.stdlib_paths.clone();
         search_paths.insert(0, ".".to_string());
 
-        // Також шукаємо у вкладених директоріях (ядро/модуль)
         let sub_filenames: Vec<String> = vec![
             format!("{}/{}.тризуб", name, name),
             format!("ядро/{}.тризуб", name),
@@ -6120,12 +6211,37 @@ except Exception as e:
             for filename in filenames.iter().chain(sub_filenames.iter()) {
                 let path = format!("{}/{}", base_path, filename);
                 if let Ok(source) = std::fs::read_to_string(&path) {
+                    self.loading_modules.insert(name.to_string());
+
                     let tokens = tryzub_lexer::tokenize(&source)?;
                     let program = tryzub_parser::parse(tokens)?;
+
+                    // Зберігаємо поточне середовище та створюємо ізольоване для модуля
+                    let prev_env = self.current_env.clone();
+                    let module_env = Rc::new(RefCell::new(Scope::new(Some(self.global_env.clone()))));
+                    self.current_env = module_env.clone();
 
                     for decl in program.declarations {
                         self.execute_declaration(decl)?;
                     }
+
+                    // Збираємо всі публічні символи модуля
+                    let mut members = HashMap::new();
+                    let scope = module_env.borrow();
+                    for (k, v) in &scope.variables {
+                        members.insert(k.clone(), v.clone());
+                    }
+
+                    // Відновлюємо попереднє середовище
+                    self.current_env = prev_env;
+                    self.loading_modules.remove(name);
+
+                    // Зберігаємо модуль як Value::Module
+                    let module_val = Value::Module(name.to_string(), members);
+                    self.module_values.insert(name.to_string(), module_val.clone());
+
+                    // Також реєструємо в глобальному scope для зворотної сумісності
+                    self.global_env.borrow_mut().set(name.to_string(), module_val);
 
                     self.loaded_modules.insert(name.to_string(), true);
                     return Ok(());
@@ -6133,7 +6249,6 @@ except Exception as e:
             }
         }
 
-        // Модуль не знайдено — не помилка, просто попередження
         self.loaded_modules.insert(name.to_string(), false);
         Ok(())
     }
