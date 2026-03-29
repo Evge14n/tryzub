@@ -1465,7 +1465,18 @@ impl Parser {
                 expr = Expression::Index { object: Box::new(expr), index: Box::new(index) };
             } else if self.match_token(&TokenKind::Крапка) {
                 // Доступ до поля або виклик методу
-                let member = self.consume_identifier("Очікувалось ім'я поля або методу")?;
+                // Дозволяємо ключові слова як імена методів (напр. .взяти(), .тип())
+                let member = if let TokenKind::Ідентифікатор(name) = &self.peek().kind {
+                    let n = name.clone(); self.advance(); n
+                } else {
+                    let token = self.peek().clone();
+                    let name = token.lexeme.clone();
+                    if !name.is_empty() && name.chars().next().map_or(false, |c| c.is_alphabetic()) {
+                        self.advance(); name
+                    } else {
+                        return Err(anyhow::anyhow!("Очікувалось ім'я поля або методу після '.'"));
+                    }
+                };
                 if self.check(&TokenKind::ЛіваДужка) {
                     self.advance();
                     let mut args = Vec::new();

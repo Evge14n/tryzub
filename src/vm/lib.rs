@@ -1592,6 +1592,58 @@ impl VM {
             }
             return Err(anyhow::anyhow!("Функція '{}' не знайдена в модулі '{}'", method, mod_name));
         }
+        // ── Ліниві методи Range ──
+        if let Value::Range { from, to, inclusive } = &obj {
+            let end = if *inclusive { *to + 1 } else { *to };
+            match method {
+                "в_масив" => {
+                    return Ok(Value::Array((*from..end).map(Value::Integer).collect()));
+                }
+                "взяти" => {
+                    let n = match args.first() {
+                        Some(Value::Integer(n)) => *n as usize,
+                        _ => return Err(anyhow::anyhow!(".взяти() потребує ціле число")),
+                    };
+                    let result: Vec<Value> = (*from..end).take(n).map(Value::Integer).collect();
+                    return Ok(Value::Array(result));
+                }
+                "фільтрувати" => {
+                    if let Some(func) = args.first() {
+                        let mut result = Vec::new();
+                        for i in *from..end {
+                            let val = Value::Integer(i);
+                            let cond = self.call_value(func.clone(), vec![val.clone()])?;
+                            if cond.to_bool() { result.push(val); }
+                        }
+                        return Ok(Value::Array(result));
+                    }
+                    return Err(anyhow::anyhow!(".фільтрувати() потребує предикат"));
+                }
+                "перетворити" => {
+                    if let Some(func) = args.first() {
+                        let mut result = Vec::new();
+                        for i in *from..end {
+                            result.push(self.call_value(func.clone(), vec![Value::Integer(i)])?);
+                        }
+                        return Ok(Value::Array(result));
+                    }
+                    return Err(anyhow::anyhow!(".перетворити() потребує функцію"));
+                }
+                "згорнути" => {
+                    if args.len() >= 2 {
+                        let mut acc = args[0].clone();
+                        let func = args[1].clone();
+                        for i in *from..end {
+                            acc = self.call_value(func.clone(), vec![acc, Value::Integer(i)])?;
+                        }
+                        return Ok(acc);
+                    }
+                    return Err(anyhow::anyhow!(".згорнути() потребує початкове значення та функцію"));
+                }
+                _ => {}
+            }
+        }
+
         // ── Методи масивів ──
         if let Value::Array(ref arr) = obj {
             match method {
@@ -1665,6 +1717,11 @@ impl VM {
                     let parts: Vec<String> = arr.iter().map(|v| v.to_display_string()).collect();
                     return Ok(Value::String(parts.join(sep)));
                 }
+                "взяти" => {
+                    let n = match args.first() { Some(Value::Integer(n)) => *n as usize, _ => arr.len() };
+                    return Ok(Value::Array(arr.iter().take(n).cloned().collect()));
+                }
+                "в_масив" => return Ok(Value::Array(arr.clone())),
                 "зрізати" | "зріз" => {
                     let from = match args.first() { Some(Value::Integer(n)) => *n as usize, _ => 0 };
                     let to = match args.get(1) { Some(Value::Integer(n)) => *n as usize, _ => arr.len() };
@@ -3320,11 +3377,11 @@ impl VM {
                 } else { Err(anyhow::anyhow!("додати очікує 2 аргументи")) }
             }
             "діапазон" => {
-                // діапазон(від, до) — створює масив
+                // діапазон(від, до) — повертає ліниве Range
                 if args.len() == 2 {
                     match (&args[0], &args[1]) {
                         (Value::Integer(from), Value::Integer(to)) => {
-                            Ok(Value::Array((*from..*to).map(Value::Integer).collect()))
+                            Ok(Value::Range { from: *from, to: *to, inclusive: false })
                         }
                         _ => Err(anyhow::anyhow!("діапазон очікує два цілі числа")),
                     }
