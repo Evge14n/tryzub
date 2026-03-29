@@ -13,6 +13,12 @@ pub struct JitCompiler {
 }
 
 #[cfg(target_arch = "x86_64")]
+impl Default for JitCompiler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl JitCompiler {
     pub fn new() -> Self {
         Self {
@@ -52,14 +58,14 @@ impl JitCompiler {
                     self.emit(&[0x48, 0x83, 0xC4, 0x08]); // add rsp, 8
                 }
                 Op::LoadLocal => {
-                    let offset = (inst.arg as u32 + 1) * 8;
+                    let offset = (inst.arg + 1) * 8;
                     // mov rax, [rbp - offset]; push rax
                     self.emit(&[0x48, 0x8B, 0x85]); // mov rax, [rbp - disp32]
                     self.emit_u32((!offset).wrapping_add(1)); // negative offset as u32
                     self.emit(&[0x50]); // push rax
                 }
                 Op::StoreLocal => {
-                    let offset = (inst.arg as u32 + 1) * 8;
+                    let offset = (inst.arg + 1) * 8;
                     // pop rax; mov [rbp - offset], rax
                     self.emit(&[0x58]); // pop rax
                     self.emit(&[0x48, 0x89, 0x85]); // mov [rbp - disp32], rax
@@ -106,13 +112,13 @@ impl JitCompiler {
                 Op::Gt => { self.emit_cmp(0x9F); } // setg
                 Op::Ge => { self.emit_cmp(0x9D); } // setge
                 Op::Inc => {
-                    let offset = (inst.arg as u32 + 1) * 8;
+                    let offset = (inst.arg + 1) * 8;
                     // inc qword [rbp - offset]
                     self.emit(&[0x48, 0xFF, 0x85]); // inc [rbp - disp32]
                     self.emit_u32((!offset).wrapping_add(1));
                 }
                 Op::AddAssign => {
-                    let offset = (inst.arg as u32 + 1) * 8;
+                    let offset = (inst.arg + 1) * 8;
                     // pop rax; add [rbp - offset], rax
                     self.emit(&[0x58]); // pop rax
                     self.emit(&[0x48, 0x01, 0x85]); // add [rbp - disp32], rax
@@ -221,7 +227,7 @@ extern "C" fn jit_print_i64(val: i64) {
 #[cfg(target_os = "windows")]
 impl JitFunction {
     pub fn new(code: Vec<u8>) -> Self {
-        use std::ptr;
+        
         let size = code.len();
         let ptr = unsafe {
             windows_alloc_exec(size, &code)
@@ -231,7 +237,7 @@ impl JitFunction {
 
     pub fn execute(&self) -> i64 {
         let print_fn = jit_print_i64 as *const () as u64;
-        let func: extern "C" fn(u64) -> i64 = unsafe {
+        let _func: extern "C" fn(u64) -> i64 = unsafe {
             std::mem::transmute(self.ptr)
         };
         // Pass print function pointer via r15 by wrapping in asm

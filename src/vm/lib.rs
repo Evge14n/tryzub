@@ -11,14 +11,11 @@ use std::collections::HashSet;
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
-use serde_json;
-use rusqlite;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use sha2::Digest as Sha2Digest;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use rand::Rng;
-use image;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -95,7 +92,7 @@ impl PureCache {
 use tryzub_parser::{
     Program, Declaration, Statement, Expression, Literal, BinaryOp, UnaryOp,
     Type, Parameter, AssignmentOp, Pattern, MatchArm, FormatPart, LambdaParam,
-    EnumVariant, TraitMethod, Contract,
+    EnumVariant, Contract,
 };
 
 // ════════════════════════════════════════════════════════════════════
@@ -269,7 +266,7 @@ impl Value {
 type Environment = Rc<RefCell<Scope>>;
 
 #[derive(Debug, Clone)]
-struct Scope {
+pub struct Scope {
     variables: HashMap<String, Value>,
     parent: Option<Environment>,
 }
@@ -364,6 +361,7 @@ pub struct VM {
 // ════════════════════════════════════════════════════════════════════
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct WebRoute {
     method: String,
     path: String,
@@ -417,7 +415,7 @@ impl WebRoutes {
 
             if route.path_parts.len() != req_parts.len() {
                 // Перевірка wildcard
-                if route.path_parts.last().map_or(false, |p| matches!(p, PathPart::Wildcard)) {
+                if route.path_parts.last().is_some_and(|p| matches!(p, PathPart::Wildcard)) {
                     if req_parts.len() < route.path_parts.len() - 1 { continue; }
                 } else {
                     continue;
@@ -455,6 +453,12 @@ impl Drop for VM {
         for (addr, layout) in self.allocations.drain() {
             unsafe { std::alloc::dealloc(addr as *mut u8, layout); }
         }
+    }
+}
+
+impl Default for VM {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -678,7 +682,7 @@ impl VM {
 
         // Шукаємо функцію головна() — якщо є, запускаємо
         let main_fn = self.global_env.borrow().get("головна");
-        if let Some(Value::Function { params, body, closure, .. }) = main_fn {
+        if let Some(Value::Function { params: _, body, closure, .. }) = main_fn {
             let prev_env = self.current_env.clone();
             self.current_env = Rc::new(RefCell::new(Scope::new(Some(closure))));
             for stmt in body {
@@ -776,11 +780,11 @@ impl VM {
                 self.macros.insert(name.clone(), (params, body));
                 self.current_env.borrow_mut().set(name, Value::BuiltinFn(builtin_name));
             }
-            Declaration::FuzzTest { name, inputs, body } => {
+            Declaration::FuzzTest { name: _, inputs: _, body: _ } => {
                 // Фаз-тести запускаються через `тризуб тестувати`
                 // Генеруємо випадкові входи та виконуємо тіло
             }
-            Declaration::Benchmark { name, sizes, body } => {
+            Declaration::Benchmark { name: _, sizes: _, body: _ } => {
                 // Бенчмарки запускаються через `тризуб тестувати`
             }
             Declaration::Import { path, .. } => {
@@ -790,7 +794,7 @@ impl VM {
                     self.load_module(&module_name)?;
                 }
             }
-            Declaration::Test { name, body } => {
+            Declaration::Test { name: _, body: _ } => {
                 // Тести не виконуються при звичайному запуску —
                 // тільки через `тризуб тестувати`
             }
@@ -1920,7 +1924,7 @@ impl VM {
 
                     let mut request_line = String::new();
                     if reader.read_line(&mut request_line).is_err() { continue; }
-                    let parts: Vec<&str> = request_line.trim().split_whitespace().collect();
+                    let parts: Vec<&str> = request_line.split_whitespace().collect();
                     if parts.len() < 2 { continue; }
 
                     let method = parts[0];
@@ -2058,7 +2062,7 @@ impl VM {
 
                     // Знаходимо маршрут
                     let (response_body, response_type, response_status, extra_headers) =
-                        if let Some((route, params)) = routes.find_route(method, path) {
+                        if let Some((route, _params)) = routes.find_route(method, path) {
                             // Додаємо параметри URL до запиту
                             // (через Dict оновлення - VM не може мутувати, тому передаємо як є)
 
@@ -2181,7 +2185,7 @@ impl VM {
                     );
 
                     if let Some(loc) = extra_headers {
-                        let safe_loc = loc.replace('\r', "").replace('\n', "");
+                        let safe_loc = loc.replace(['\r', '\n'], "");
                         response.push_str(&format!("Location: {}\r\n", safe_loc));
                     }
 
@@ -2358,7 +2362,7 @@ impl VM {
                 ));
             }
         }
-        if name.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+        if name.chars().next().is_some_and(|c| c.is_ascii_digit()) {
             return Err(anyhow::anyhow!("SQL ідентифікатор '{}' не може починатись з цифри", name));
         }
         Ok(())
@@ -2901,7 +2905,7 @@ impl VM {
                     Some(Value::String(s)) => s.clone(),
                     _ => "/".to_string(),
                 };
-                let safe_url = url.replace('\r', "").replace('\n', "");
+                let safe_url = url.replace(['\r', '\n'], "");
                 Ok(Value::Dict(vec![
                     (Value::String("тіло".to_string()), Value::String(String::new())),
                     (Value::String("статус".to_string()), Value::Integer(302)),
@@ -2956,7 +2960,7 @@ impl VM {
                     (0..32).map(|_| format!("{:02x}", rng.gen::<u8>())).collect()
                 };
 
-                let json = serde_json::to_string(&VM::value_to_json(&data)).unwrap_or_default();
+                let _json = serde_json::to_string(&VM::value_to_json(&data)).unwrap_or_default();
                 // Зберігаємо в БД якщо є підключення, інакше в пам'яті
                 let cookie = format!(
                     "тризуб_сесія={}; Max-Age=86400; Path=/; HttpOnly; SameSite=Strict",
@@ -2980,7 +2984,7 @@ impl VM {
                         let _ = encoder.write_all(s.as_bytes());
                         match encoder.finish() {
                             Ok(compressed) => {
-                                let ratio = if s.len() > 0 { (compressed.len() as f64 / s.len() as f64 * 100.0) as i64 } else { 100 };
+                                let ratio = if !s.is_empty() { (compressed.len() as f64 / s.len() as f64 * 100.0) as i64 } else { 100 };
                                 Ok(Value::Dict(vec![
                                     (Value::String("дані".to_string()), Value::String(URL_SAFE_NO_PAD.encode(&compressed))),
                                     (Value::String("розмір_до".to_string()), Value::Integer(s.len() as i64)),
@@ -3452,22 +3456,22 @@ impl VM {
                         use sha2::{Sha256, Digest};
                         let mut rng = rand::thread_rng();
                         let salt: [u8; 16] = rng.gen();
-                        let salt_b64 = URL_SAFE_NO_PAD.encode(&salt);
+                        let salt_b64 = URL_SAFE_NO_PAD.encode(salt);
 
                         let mut hash = {
                             let mut h = Sha256::new();
-                            h.update(&salt);
+                            h.update(salt);
                             h.update(password.as_bytes());
                             h.finalize()
                         };
                         for _ in 0..600_000 {
                             let mut h = Sha256::new();
-                            h.update(&salt);
+                            h.update(salt);
                             h.update(password.as_bytes());
-                            h.update(&hash);
+                            h.update(hash);
                             hash = h.finalize();
                         }
-                        let hash_b64 = URL_SAFE_NO_PAD.encode(&hash);
+                        let hash_b64 = URL_SAFE_NO_PAD.encode(hash);
                         Ok(Value::String(format!("$тх2$600000${}${}", salt_b64, hash_b64)))
                     }
                     _ => Err(anyhow::anyhow!("авт_хешувати очікує пароль (тхт)")),
@@ -3495,10 +3499,10 @@ impl VM {
                                 let mut h = Sha256::new();
                                 h.update(&salt);
                                 h.update(password.as_bytes());
-                                h.update(&hash);
+                                h.update(hash);
                                 hash = h.finalize();
                             }
-                            let computed = URL_SAFE_NO_PAD.encode(&hash);
+                            let computed = URL_SAFE_NO_PAD.encode(hash);
                             // Timing-safe
                             let eq = stored_hash.len() == computed.len() &&
                                 stored_hash.bytes().zip(computed.bytes())
@@ -3516,7 +3520,7 @@ impl VM {
 
             "авт_створити_токен" => {
                 // JWT з HMAC-SHA256 (RFC 7519 сумісний)
-                if args.len() >= 1 {
+                if !args.is_empty() {
                     let data = &args[0];
                     let secret = args.get(1).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
                         .unwrap_or_else(|| self.default_jwt_secret.clone());
@@ -3546,7 +3550,7 @@ impl VM {
                         .map_err(|e| anyhow::anyhow!("HMAC помилка: {}", e))?;
                     mac.update(sign_input.as_bytes());
                     let sig = mac.finalize().into_bytes();
-                    let sig_b64 = URL_SAFE_NO_PAD.encode(&sig);
+                    let sig_b64 = URL_SAFE_NO_PAD.encode(sig);
 
                     Ok(Value::String(format!("{}.{}.{}", header_b64, payload_b64, sig_b64)))
                 } else {
@@ -3556,7 +3560,7 @@ impl VM {
 
             "авт_перевірити_токен" => {
                 // JWT верифікація з HMAC-SHA256
-                if args.len() >= 1 {
+                if !args.is_empty() {
                     if let Value::String(token) = &args[0] {
                         let secret = args.get(1).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
                             .unwrap_or_else(|| self.default_jwt_secret.clone());
@@ -3575,7 +3579,7 @@ impl VM {
                         let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
                             .map_err(|e| anyhow::anyhow!("HMAC: {}", e))?;
                         mac.update(sign_input.as_bytes());
-                        let expected_sig = URL_SAFE_NO_PAD.encode(&mac.finalize().into_bytes());
+                        let expected_sig = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
 
                         let sig_valid = {
                             let a = expected_sig.as_bytes();
@@ -4050,16 +4054,13 @@ impl VM {
                             3 => Value::Null,
                             _ => Value::String((0..rng.gen_range(1..100)).map(|_| rng.gen::<char>()).collect()),
                         };
-                        match self.call_value(func.clone(), vec![test_input.clone()]) {
-                            Err(e) => {
-                                crashes.push(Value::Dict(vec![
-                                    (Value::String("вхід".into()), test_input),
-                                    (Value::String("помилка".into()), Value::String(e.to_string())),
-                                    (Value::String("ітерація".into()), Value::Integer(i as i64)),
-                                ]));
-                                if crashes.len() >= 10 { break; }
-                            }
-                            Ok(_) => {}
+                        if let Err(e) = self.call_value(func.clone(), vec![test_input.clone()]) {
+                            crashes.push(Value::Dict(vec![
+                                (Value::String("вхід".into()), test_input),
+                                (Value::String("помилка".into()), Value::String(e.to_string())),
+                                (Value::String("ітерація".into()), Value::Integer(i as i64)),
+                            ]));
+                            if crashes.len() >= 10 { break; }
                         }
                         tested += 1;
                     }
@@ -4093,7 +4094,7 @@ impl VM {
                             issues.push(Value::String("Template Injection: знайдено шаблонний вираз".into()));
                         }
                         if regex::Regex::new(r"(?i)(cmd|powershell|bash|sh)\s*[;&|]").ok()
-                            .map_or(false, |re| re.is_match(s)) {
+                            .is_some_and(|re| re.is_match(s)) {
                             issues.push(Value::String("Command Injection: знайдено команду оболонки".into()));
                         }
                         Ok(Value::Dict(vec![
@@ -4259,7 +4260,7 @@ impl VM {
                         let has_lower = password.chars().any(|c| c.is_lowercase());
                         let has_digit = password.chars().any(|c| c.is_ascii_digit());
                         let has_special = password.chars().any(|c| !c.is_alphanumeric());
-                        let has_cyrillic = password.chars().any(|c| c >= 'а' && c <= 'я' || c >= 'А' && c <= 'Я');
+                        let has_cyrillic = password.chars().any(|c| ('а'..='я').contains(&c) || ('А'..='Я').contains(&c));
 
                         let mut score = 0i64;
                         if len >= 8 { score += 1; }
@@ -4525,7 +4526,7 @@ impl VM {
 
             "pwm_значення" => {
                 // pwm_значення(відсоток, мін_мкс, макс_мкс) — конвертує % в мікросекунди PWM
-                if args.len() >= 1 {
+                if !args.is_empty() {
                     let percent = match &args[0] { Value::Float(f) => *f, Value::Integer(n) => *n as f64, _ => 0.0 };
                     let min_us = args.get(1).and_then(|v| if let Value::Integer(n) = v { Some(*n as f64) } else if let Value::Float(f) = v { Some(*f) } else { None }).unwrap_or(1000.0);
                     let max_us = args.get(2).and_then(|v| if let Value::Integer(n) = v { Some(*n as f64) } else if let Value::Float(f) = v { Some(*f) } else { None }).unwrap_or(2000.0);
@@ -4607,7 +4608,7 @@ impl VM {
 
             "число_в_байти" => {
                 // число_в_байти(число, кількість_байтів) — конвертує число в масив байтів
-                if args.len() >= 1 {
+                if !args.is_empty() {
                     let num = match &args[0] { Value::Integer(n) => *n, _ => 0 };
                     let count = args.get(1).and_then(|v| if let Value::Integer(n) = v { Some(*n) } else { None }).unwrap_or(4) as usize;
                     let bytes: Vec<Value> = (0..count).map(|i| Value::Integer((num >> (i * 8)) & 0xFF)).collect();
@@ -5051,7 +5052,7 @@ impl VM {
                 let script = match &args[0] { Value::String(s) => s.clone(), _ => return Err(anyhow::anyhow!("Expected Python script")) };
                 let py_cmd = if cfg!(windows) { "python" } else { "python3" };
                 let output = std::process::Command::new(py_cmd)
-                    .args(&["-c", &script])
+                    .args(["-c", &script])
                     .output()
                     .map_err(|e| anyhow::anyhow!("Python not found: {}", e))?;
                 let stdout = String::from_utf8_lossy(&output.stdout).to_string().trim().to_string();
@@ -5115,7 +5116,7 @@ except Exception as e:
     print(json.dumps({{"error": str(e)}}))
 "#, model, image_path.replace('\\', "\\\\"));
                 let output = std::process::Command::new(py_cmd)
-                    .args(&["-c", &script])
+                    .args(["-c", &script])
                     .output()
                     .map_err(|e| anyhow::anyhow!("Python/CLIP not found: {}", e))?;
                 let stdout = String::from_utf8_lossy(&output.stdout).to_string().trim().to_string();
@@ -5271,7 +5272,7 @@ except Exception as e:
             }
 
             "записати_байт" => {
-                let addr = match args.get(0) { Some(Value::Integer(n)) => *n as usize, _ => return Err(anyhow::anyhow!("записати_байт(адреса, значення)")) };
+                let addr = match args.first() { Some(Value::Integer(n)) => *n as usize, _ => return Err(anyhow::anyhow!("записати_байт(адреса, значення)")) };
                 let val = match args.get(1) { Some(Value::Integer(n)) => *n as u8, _ => return Err(anyhow::anyhow!("записати_байт(адреса, значення)")) };
                 self.check_memory_access(addr, 1)?;
                 unsafe { *(addr as *mut u8) = val; }
@@ -5286,7 +5287,7 @@ except Exception as e:
             }
 
             "записати_слово" => {
-                let addr = match args.get(0) { Some(Value::Integer(n)) => *n as usize, _ => return Err(anyhow::anyhow!("записати_слово(адреса, значення)")) };
+                let addr = match args.first() { Some(Value::Integer(n)) => *n as usize, _ => return Err(anyhow::anyhow!("записати_слово(адреса, значення)")) };
                 let val = match args.get(1) { Some(Value::Integer(n)) => *n, _ => return Err(anyhow::anyhow!("записати_слово(адреса, значення)")) };
                 self.check_memory_access(addr, 8)?;
                 unsafe { *(addr as *mut i64) = val; }
@@ -5301,7 +5302,7 @@ except Exception as e:
             }
 
             "копіювати_пам'ять" => {
-                let dst = match args.get(0) { Some(Value::Integer(n)) => *n as usize, _ => return Err(anyhow::anyhow!("копіювати_пам'ять(куди, звідки, розмір)")) };
+                let dst = match args.first() { Some(Value::Integer(n)) => *n as usize, _ => return Err(anyhow::anyhow!("копіювати_пам'ять(куди, звідки, розмір)")) };
                 let src = match args.get(1) { Some(Value::Integer(n)) => *n as usize, _ => return Err(anyhow::anyhow!("копіювати_пам'ять(куди, звідки, розмір)")) };
                 let size = match args.get(2) { Some(Value::Integer(n)) => *n as usize, _ => return Err(anyhow::anyhow!("копіювати_пам'ять(куди, звідки, розмір)")) };
                 self.check_memory_access(dst, size)?;
@@ -5311,7 +5312,7 @@ except Exception as e:
             }
 
             "заповнити_пам'ять" => {
-                let addr = match args.get(0) { Some(Value::Integer(n)) => *n as usize, _ => return Err(anyhow::anyhow!("заповнити_пам'ять(адреса, значення, розмір)")) };
+                let addr = match args.first() { Some(Value::Integer(n)) => *n as usize, _ => return Err(anyhow::anyhow!("заповнити_пам'ять(адреса, значення, розмір)")) };
                 let val = match args.get(1) { Some(Value::Integer(n)) => *n as u8, _ => return Err(anyhow::anyhow!("заповнити_пам'ять(адреса, значення, розмір)")) };
                 let size = match args.get(2) { Some(Value::Integer(n)) => *n as usize, _ => return Err(anyhow::anyhow!("заповнити_пам'ять(адреса, значення, розмір)")) };
                 self.check_memory_access(addr, size)?;
@@ -5435,10 +5436,8 @@ except Exception as e:
     }
 
     fn load_module(&mut self, name: &str) -> Result<()> {
-        let filenames = vec![
-            format!("{}.тризуб", name),
-            format!("{}.tryzub", name),
-        ];
+        let filenames = [format!("{}.тризуб", name),
+            format!("{}.tryzub", name)];
 
         // Шукаємо у: 1) робоча директорія, 2) stdlib/, 3) ../stdlib/
         let mut search_paths = self.stdlib_paths.clone();
@@ -5837,7 +5836,7 @@ except Exception as e:
             }
             serde_json::Value::String(s) => Value::String(s.clone()),
             serde_json::Value::Array(arr) => {
-                Value::Array(arr.iter().map(|v| VM::json_to_value(v)).collect())
+                Value::Array(arr.iter().map(VM::json_to_value).collect())
             }
             serde_json::Value::Object(map) => {
                 let pairs: Vec<(Value, Value)> = map.iter()
@@ -5877,9 +5876,9 @@ except Exception as e:
                 let expr: String = chars[start..j].iter().collect();
                 let expr = expr.trim();
 
-                if expr.starts_with("якщо ") {
+                if let Some(_condition) = expr.strip_prefix("якщо ") {
                     // Умовний блок: {якщо умова}...{/якщо}
-                    let condition = &expr[9..]; // "якщо " = 9 bytes in UTF-8? Let's be safe
+                    // "якщо " = 9 bytes in UTF-8? Let's be safe
                     let condition = expr.trim_start_matches("якщо").trim();
                     let end_tag = "{/якщо}";
                     let else_tag = "{інакше}";
@@ -6117,7 +6116,7 @@ except Exception as e:
             Value::Float(f) => serde_json::json!(*f),
             Value::String(s) => serde_json::Value::String(s.clone()),
             Value::Array(arr) => {
-                serde_json::Value::Array(arr.iter().map(|v| VM::value_to_json(v)).collect())
+                serde_json::Value::Array(arr.iter().map(VM::value_to_json).collect())
             }
             Value::Dict(pairs) => {
                 let mut map = serde_json::Map::new();

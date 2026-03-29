@@ -1355,7 +1355,7 @@ impl Parser {
 
     /// Побітове OR: a | b (тільки коли не лямбда і не pipeline)
     fn bitwise_or_expression(&mut self) -> Result<Expression> {
-        let mut expr = self.bitwise_xor_expression()?;
+        let expr = self.bitwise_xor_expression()?;
         // Note: | conflicts with lambda and pipeline, so we skip bitwise | here
         // Use explicit бітАбо() function instead
         Ok(expr)
@@ -1373,7 +1373,7 @@ impl Parser {
 
     /// Побітове AND: a & b (тільки коли не посилання)
     fn bitwise_and_expression(&mut self) -> Result<Expression> {
-        let mut expr = self.shift_expression()?;
+        let expr = self.shift_expression()?;
         // Note: & conflicts with references, skip bitwise & here
         Ok(expr)
     }

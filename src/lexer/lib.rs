@@ -11,6 +11,7 @@ pub struct Token {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(non_camel_case_types)]
 pub enum TokenKind {
     // Літерали
     ЦілеЧисло(i64),
@@ -609,7 +610,7 @@ impl Lexer {
 
         Ok(Some(Token {
             kind: TokenKind::ФормРядок(parts.clone()),
-            lexeme: format!("ф\"...\""),
+            lexeme: "ф\"...\"".to_string(),
             line: self.line,
             column: start_column,
         }))
@@ -715,7 +716,7 @@ impl Lexer {
             }
         }
 
-        while self.peek().is_digit(10) || self.peek() == '_' {
+        while self.peek().is_ascii_digit() || self.peek() == '_' {
             if self.peek() != '_' {
                 value.push(self.advance());
             } else {
@@ -724,9 +725,9 @@ impl Lexer {
         }
 
         // Дробова частина
-        if self.peek() == '.' && self.peek_next().is_digit(10) {
+        if self.peek() == '.' && self.peek_next().is_ascii_digit() {
             value.push(self.advance()); // '.'
-            while self.peek().is_digit(10) || self.peek() == '_' {
+            while self.peek().is_ascii_digit() || self.peek() == '_' {
                 if self.peek() != '_' {
                     value.push(self.advance());
                 } else {
@@ -740,7 +741,7 @@ impl Lexer {
                 if self.peek() == '+' || self.peek() == '-' {
                     value.push(self.advance());
                 }
-                while self.peek().is_digit(10) {
+                while self.peek().is_ascii_digit() {
                     value.push(self.advance());
                 }
             }
@@ -762,7 +763,7 @@ impl Lexer {
             if self.peek() == '+' || self.peek() == '-' {
                 value.push(self.advance());
             }
-            while self.peek().is_digit(10) {
+            while self.peek().is_ascii_digit() {
                 value.push(self.advance());
             }
             let float_value = value.parse::<f64>()

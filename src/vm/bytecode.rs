@@ -112,6 +112,12 @@ pub struct Chunk {
     pub local_count: usize,
 }
 
+impl Default for Chunk {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Chunk {
     pub fn new() -> Self {
         Self { code: Vec::new(), constants: Vec::new(), local_count: 0 }
