@@ -10,6 +10,12 @@ pub struct Compiler {
     scope_depth: usize,
 }
 
+impl Default for Compiler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Compiler {
     pub fn new() -> Self {
         Self {
@@ -40,7 +46,7 @@ impl Compiler {
                 let slot = self.add_local(name.clone());
                 self.chunk.emit(Op::StoreLocal, slot as u32);
             }
-            Declaration::Function { name, params, body, .. } => {
+            Declaration::Function { name: _, params: _, body, .. } => {
                 // Inline компіляція тіла функції
                 for stmt in body {
                     self.compile_statement(stmt);
@@ -102,7 +108,7 @@ impl Compiler {
                 let exit_target = self.chunk.code.len() as u32;
                 self.chunk.patch_jump(exit_jump, exit_target);
             }
-            Statement::For { variable, from, to, step, body } => {
+            Statement::For { variable, from, to, step: _, body } => {
                 self.compile_expression(from);
                 let i_slot = self.add_local(variable.clone());
                 self.chunk.emit(Op::StoreLocal, i_slot as u32);

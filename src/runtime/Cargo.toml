@@ -5,7 +5,6 @@ edition = "2021"
 
 [lib]
 path = "lib.rs"
-authors = ["*******"]
 
 [dependencies]
 anyhow = "1.0"

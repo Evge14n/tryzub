@@ -220,14 +220,14 @@ fn main() {
 fn format_error_with_source(source: &str, file: &std::path::Path, error: &str) -> String {
     let line_num = extract_line_number(error);
     if line_num == 0 {
-        return format!("{}", error);
+        return error.to_string();
     }
     let lines: Vec<&str> = source.lines().collect();
     let mut out = String::new();
     out.push_str(&format!("\x1b[1;31mПомилка\x1b[0m: {}\n", error));
     out.push_str(&format!(" \x1b[36m-->\x1b[0m {}:{}\n", file.display(), line_num));
     out.push_str("  \x1b[36m|\x1b[0m\n");
-    let start = if line_num > 2 { line_num - 2 } else { 0 };
+    let start = line_num.saturating_sub(2);
     let end = std::cmp::min(line_num + 1, lines.len());
     for i in start..end {
         let marker = if i + 1 == line_num { "\x1b[1;31m>\x1b[0m" } else { " " };
@@ -316,7 +316,7 @@ fn run_file(file: PathBuf, fast: bool, jit: bool, args: Vec<String>) -> Result<(
             if result != 0 {
                 eprintln!("  [JIT] Результат: {} ({:.3}мс)", result, elapsed.as_secs_f64() * 1000.0);
             }
-            return Ok(());
+            Ok(())
         }
         #[cfg(not(target_arch = "x86_64"))]
         return Err(anyhow::anyhow!("JIT доступний тільки на x86_64"));
@@ -395,7 +395,7 @@ fn watch_file(file: PathBuf) -> Result<()> {
     println!("   Зміни автоматично перезапустять програму\n");
 
     loop {
-        print!("\x1b[33m▶ Запуск...\x1b[0m\n");
+        println!("\x1b[33m▶ Запуск...\x1b[0m");
         let start = std::time::Instant::now();
         match run_file(file.clone(), false, false, vec![]) {
             Ok(_) => {
@@ -641,8 +641,7 @@ fn run_repl() -> Result<()> {
             continue;
         }
 
-        if line.starts_with(":тип ") {
-            let expr = &line[":тип ".len()..];
+        if let Some(expr) = line.strip_prefix(":тип ") {
             let full_source = format!(
                 "{}\nфункція головна() {{ змінна __р = {} \n друк(тип_значення(__р)) }}",
                 declarations_source, expr
@@ -654,8 +653,7 @@ fn run_repl() -> Result<()> {
             continue;
         }
 
-        if line.starts_with(":час ") {
-            let code = &line[":час ".len()..];
+        if let Some(code) = line.strip_prefix(":час ") {
             let full_source = format!(
                 "{}\nфункція головна() {{ {} }}",
                 declarations_source, code
