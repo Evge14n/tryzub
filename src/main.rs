@@ -108,6 +108,14 @@ enum Commands {
         /// Вихідний файл
         #[arg(short = 'о', long = "вихід")]
         output: Option<PathBuf>,
+
+        /// Нативна компіляція в flat binary (x86_64 machine code)
+        #[arg(long = "нативний", default_value = "false")]
+        native: bool,
+
+        /// Компілювати як bootable OS kernel image
+        #[arg(long = "ядро", default_value = "false")]
+        kernel: bool,
     },
 
     /// Показати версію та інформацію
@@ -152,7 +160,7 @@ fn main() {
     let result = match cli.command {
         Commands::Run { file, fast, jit, args } => run_file(file, fast, jit, args),
         Commands::Watch { file } => watch_file(file),
-        Commands::Compile { file, output } => compile_file(file, output),
+        Commands::Compile { file, output, native, kernel } => compile_file(file, output, native, kernel),
         Commands::Check { file } => check_file(file),
         Commands::Test { file } => run_tests(file),
         Commands::New { name } => create_project(name),
@@ -335,43 +343,46 @@ fn run_file(file: PathBuf, fast: bool, jit: bool, args: Vec<String>) -> Result<(
     }
 }
 
-fn compile_file(file: PathBuf, output: Option<PathBuf>) -> Result<()> {
+fn compile_file(file: PathBuf, output: Option<PathBuf>, native: bool, kernel: bool) -> Result<()> {
     let source = fs::read_to_string(&file)
         .map_err(|e| anyhow::anyhow!("Не вдалося прочитати {:?}: {}", file, e))?;
 
-    // Перевірка синтаксису
     let tokens = tryzub_lexer::tokenize(&source)?;
     let _ast = tryzub_parser::parse(tokens)?;
 
-    let out_name = output.unwrap_or_else(|| {
-        let stem = file.file_stem().unwrap_or_default().to_string_lossy();
-        PathBuf::from(format!("{}.exe", stem))
-    });
+    let stem = file.file_stem().unwrap_or_default().to_string_lossy().to_string();
 
-    let exe_path = std::env::current_exe()?;
-    let exe_bytes = fs::read(&exe_path)?;
+    if kernel {
+        let out_name = output.unwrap_or_else(|| PathBuf::from(format!("{}.bin", stem)));
+        tryzub_vm::native::NativeCompiler::compile_to_bootable(&source, &out_name.to_string_lossy())?;
+        let size = fs::metadata(&out_name)?.len();
+        println!("Ядро скомпільовано: {} ({} байт)", out_name.display(), size);
+        println!("Запустити: qemu-system-x86_64 -drive format=raw,file={}", out_name.display());
+        return Ok(());
+    }
 
-    // Формат: [tryzub.exe байти][source байти][source_len як u64 LE][magic "ТРИЗУБ\0\0"]
-    let magic = b"\xd0\xa2\xd0\xa0\xd0\x98\xd0\x97"; // "ТРИЗ" UTF-8
+    if native {
+        let out_name = output.unwrap_or_else(|| PathBuf::from(format!("{}.bin", stem)));
+        tryzub_vm::native::NativeCompiler::compile_to_flat_binary(&source, &out_name.to_string_lossy())?;
+        let size = fs::metadata(&out_name)?.len();
+        println!("Нативний код: {} ({} байт)", out_name.display(), size);
+        return Ok(());
+    }
+
+    // Бандл: interpreter + source
+    let out_name = output.unwrap_or_else(|| PathBuf::from(format!("{}.exe", stem)));
+    let exe_bytes = fs::read(std::env::current_exe()?)?;
+    let magic = b"\xd0\xa2\xd0\xa0\xd0\x98\xd0\x97";
     let source_bytes = source.as_bytes();
-    let source_len = source_bytes.len() as u64;
 
     let mut output_bytes = exe_bytes;
     output_bytes.extend_from_slice(source_bytes);
-    output_bytes.extend_from_slice(&source_len.to_le_bytes());
+    output_bytes.extend_from_slice(&(source_bytes.len() as u64).to_le_bytes());
     output_bytes.extend_from_slice(magic);
 
     fs::write(&out_name, &output_bytes)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&out_name, fs::Permissions::from_mode(0o755))?;
-    }
-
     let size_mb = output_bytes.len() as f64 / 1024.0 / 1024.0;
     println!("Скомпільовано: {} ({:.1} MB)", out_name.display(), size_mb);
-    println!("Запустити: ./{}", out_name.display());
     Ok(())
 }
 

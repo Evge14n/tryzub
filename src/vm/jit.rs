@@ -192,6 +192,98 @@ impl JitCompiler {
         JitFunction::new(self.code)
     }
 
+    pub fn compile_to_bytes(mut self, chunk: &Chunk) -> Vec<u8> {
+        // Bare-metal: no prologue frame (kernel starts flat)
+        let locals_size = ((chunk.local_count + 1) * 8) as u32;
+        let aligned = (locals_size + 15) & !15;
+        self.emit(&[0x48, 0x81, 0xEC]); // sub rsp, imm32
+        self.emit_u32(aligned);
+
+        for (i, inst) in chunk.code.iter().enumerate() {
+            self.inst_offsets.push(self.code.len());
+            match inst.op {
+                Op::Const => {
+                    let val = match &chunk.constants[inst.arg as usize] {
+                        BcValue::Int(n) => *n,
+                        BcValue::Float(f) => *f as i64,
+                        BcValue::Bool(b) => *b as i64,
+                        _ => 0,
+                    };
+                    self.emit(&[0x48, 0xB8]);
+                    self.emit_i64(val);
+                    self.emit(&[0x50]);
+                }
+                Op::Pop => { self.emit(&[0x48, 0x83, 0xC4, 0x08]); }
+                Op::LoadLocal => {
+                    let offset = (inst.arg + 1) * 8;
+                    self.emit(&[0x48, 0x8B, 0x84, 0x24]); // mov rax, [rsp + disp32]
+                    self.emit_u32(offset);
+                    self.emit(&[0x50]);
+                }
+                Op::StoreLocal => {
+                    let offset = (inst.arg + 1) * 8;
+                    self.emit(&[0x58]); // pop rax
+                    self.emit(&[0x48, 0x89, 0x84, 0x24]); // mov [rsp + disp32], rax
+                    self.emit_u32(offset);
+                }
+                Op::Add => { self.emit(&[0x59, 0x58, 0x48, 0x01, 0xC8, 0x50]); }
+                Op::Sub => { self.emit(&[0x59, 0x58, 0x48, 0x29, 0xC8, 0x50]); }
+                Op::Mul => { self.emit(&[0x59, 0x58, 0x48, 0x0F, 0xAF, 0xC1, 0x50]); }
+                Op::Inc => {
+                    let offset = (inst.arg + 1) * 8;
+                    self.emit(&[0x48, 0xFF, 0x84, 0x24]); // inc [rsp + disp32]
+                    self.emit_u32(offset);
+                }
+                Op::AddAssign => {
+                    let offset = (inst.arg + 1) * 8;
+                    self.emit(&[0x58]); // pop rax
+                    self.emit(&[0x48, 0x01, 0x84, 0x24]); // add [rsp + disp32], rax
+                    self.emit_u32(offset);
+                }
+                Op::Lt => { self.emit_cmp(0x9C); }
+                Op::Le => { self.emit_cmp(0x9E); }
+                Op::Gt => { self.emit_cmp(0x9F); }
+                Op::Eq => { self.emit_cmp(0x94); }
+                Op::JumpIfFalse => {
+                    self.emit(&[0x58, 0x48, 0x85, 0xC0, 0x0F, 0x84]);
+                    self.jump_patches.push((self.code.len(), inst.arg as usize));
+                    self.emit_u32(0);
+                }
+                Op::Loop => {
+                    let target = i + 1 - inst.arg as usize;
+                    self.emit(&[0xE9]);
+                    self.jump_patches.push((self.code.len(), target));
+                    self.emit_u32(0);
+                }
+                Op::Print => {
+                    // Bare-metal VGA: write value to 0xB8000
+                    self.emit(&[0x58]); // pop rax
+                    // Convert int to ASCII digit + write to VGA at 0xB8000
+                    self.emit(&[0x48, 0xBB]); // mov rbx, 0xB8000
+                    self.emit_i64(0xB8000);
+                    self.emit(&[0x04, 0x30]); // add al, '0' (simple digit)
+                    self.emit(&[0x88, 0x03]); // mov [rbx], al
+                    self.emit(&[0xC6, 0x43, 0x01, 0x0F]); // mov [rbx+1], 0x0F (white on black)
+                }
+                Op::Halt => {
+                    self.emit(&[0xF4]); // hlt
+                }
+                _ => { self.emit(&[0x90]); } // nop for unsupported
+            }
+        }
+        self.emit(&[0xF4]); // hlt at end
+        self.inst_offsets.push(self.code.len());
+
+        for (patch_offset, target_inst) in &self.jump_patches {
+            let target_offset = self.inst_offsets[*target_inst];
+            let rel = (target_offset as i32) - (*patch_offset as i32 + 4);
+            let bytes = rel.to_le_bytes();
+            self.code[*patch_offset..(*patch_offset + 4)].copy_from_slice(&bytes);
+        }
+
+        self.code
+    }
+
     fn emit(&mut self, bytes: &[u8]) {
         self.code.extend_from_slice(bytes);
     }
