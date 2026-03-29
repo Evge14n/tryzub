@@ -39,7 +39,7 @@ jobs:
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Збірка
-      run: cargo build --verbose
+      run: cargo build --verbose -p tryzub-lexer -p tryzub-parser -p tryzub-vm
 
     - name: Тести
       run: cargo test --verbose -p tryzub-lexer -p tryzub-parser -p tryzub-vm
