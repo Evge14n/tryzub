@@ -98,6 +98,26 @@ enum Commands {
         file: PathBuf,
     },
 
+    /// LSP сервер для IDE підтримки
+    #[command(name = "lsp")]
+    Lsp,
+
+    /// Форматувати файл
+    #[command(name = "формат")]
+    Format {
+        #[arg(value_name = "ФАЙЛ")]
+        file: PathBuf,
+        #[arg(long = "перевірка", default_value = "false")]
+        check_only: bool,
+    },
+
+    /// Перевірити стиль коду (лінтер)
+    #[command(name = "лінт")]
+    Lint {
+        #[arg(value_name = "ФАЙЛ")]
+        file: PathBuf,
+    },
+
     /// Компілювати в standalone виконуваний файл
     #[command(name = "компілювати")]
     Compile {
@@ -158,6 +178,9 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
+        Commands::Lsp => run_lsp(),
+        Commands::Format { file, check_only } => run_format(file, check_only),
+        Commands::Lint { file } => run_lint(file),
         Commands::Run { file, fast, jit, args } => run_file(file, fast, jit, args),
         Commands::Watch { file } => watch_file(file),
         Commands::Compile { file, output, native, kernel } => compile_file(file, output, native, kernel),
@@ -914,6 +937,201 @@ a { color: #0057b7; }
     println!("  └── тести/");
     println!();
     println!("  Запустити: cd {} && тризуб веб запустити", name);
+
+    Ok(())
+}
+
+// ════════════════════════════════════════════════════════════════════
+// LSP сервер (Блок 8)
+// ════════════════════════════════════════════════════════════════════
+
+fn run_lsp() -> Result<()> {
+    use std::io::{self, BufRead, Write, Read, BufReader};
+
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    let reader = BufReader::new(stdin.lock());
+    let mut out = stdout.lock();
+
+    eprintln!("Тризуб LSP сервер запущено");
+
+    let mut content_length: usize = 0;
+    let mut in_header = true;
+
+    for line in reader.lines() {
+        let line = line?;
+
+        if in_header {
+            if line.starts_with("Content-Length:") {
+                content_length = line[15..].trim().parse().unwrap_or(0);
+            } else if line.is_empty() {
+                in_header = false;
+                let mut body = vec![0u8; content_length];
+                io::stdin().lock().read_exact(&mut body).ok();
+                let body_str = String::from_utf8_lossy(&body);
+
+                if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&body_str) {
+                    let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
+                    let id = msg.get("id").cloned();
+
+                    let response = match method {
+                        "initialize" => {
+                            serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "result": {
+                                    "capabilities": {
+                                        "textDocumentSync": 1,
+                                        "completionProvider": { "triggerCharacters": ["."] },
+                                        "hoverProvider": true,
+                                        "definitionProvider": true,
+                                        "diagnosticProvider": { "interFileDependencies": false, "workspaceDiagnostics": false }
+                                    },
+                                    "serverInfo": { "name": "тризуб-lsp", "version": "1.0.0" }
+                                }
+                            })
+                        }
+                        "initialized" => continue,
+                        "shutdown" => {
+                            serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": null })
+                        }
+                        "exit" => break,
+                        "textDocument/completion" => {
+                            let builtins = vec![
+                                "друк", "довжина", "тип_значення", "діапазон",
+                                "фільтрувати", "перетворити", "згорнути", "сортувати",
+                                "корінь", "синус", "косинус", "абс", "мін", "макс",
+                                "файл_прочитати", "файл_записати", "json_розібрати",
+                            ];
+                            let items: Vec<serde_json::Value> = builtins.iter().map(|name| {
+                                serde_json::json!({ "label": name, "kind": 3 })
+                            }).collect();
+                            serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": items })
+                        }
+                        "textDocument/hover" => {
+                            serde_json::json!({
+                                "jsonrpc": "2.0", "id": id,
+                                "result": { "contents": "Тризуб — українська мова програмування" }
+                            })
+                        }
+                        _ => {
+                            if id.is_some() {
+                                serde_json::json!({
+                                    "jsonrpc": "2.0", "id": id,
+                                    "error": { "code": -32601, "message": "Метод не підтримується" }
+                                })
+                            } else { continue; }
+                        }
+                    };
+
+                    let resp_str = serde_json::to_string(&response)?;
+                    write!(out, "Content-Length: {}\r\n\r\n{}", resp_str.len(), resp_str)?;
+                    out.flush()?;
+                }
+
+                in_header = true;
+                content_length = 0;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Форматер (Блок 9)
+// ════════════════════════════════════════════════════════════════════
+
+fn run_format(file: PathBuf, check_only: bool) -> Result<()> {
+    let source = std::fs::read_to_string(&file)?;
+    let mut formatted = String::new();
+    let mut indent_level: i32 = 0;
+    let mut prev_was_empty = false;
+
+    for line in source.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() {
+            if !prev_was_empty {
+                formatted.push('\n');
+                prev_was_empty = true;
+            }
+            continue;
+        }
+        prev_was_empty = false;
+
+        if trimmed.starts_with('}') || trimmed.starts_with(']') {
+            indent_level = (indent_level - 1).max(0);
+        }
+
+        let indent = "    ".repeat(indent_level as usize);
+        formatted.push_str(&indent);
+        formatted.push_str(trimmed);
+        formatted.push('\n');
+
+        if trimmed.ends_with('{') || trimmed.ends_with('[') {
+            indent_level += 1;
+        }
+    }
+
+    if check_only {
+        if formatted.trim() != source.trim() {
+            eprintln!("Форматування потрібне: {}", file.display());
+            std::process::exit(1);
+        } else {
+            println!("OK: {}", file.display());
+        }
+    } else {
+        std::fs::write(&file, formatted)?;
+        println!("Відформатовано: {}", file.display());
+    }
+
+    Ok(())
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Лінтер (Блок 9)
+// ════════════════════════════════════════════════════════════════════
+
+fn run_lint(file: PathBuf) -> Result<()> {
+    let source = std::fs::read_to_string(&file)?;
+    let mut warnings = Vec::new();
+
+    for (i, line) in source.lines().enumerate() {
+        let line_num = i + 1;
+        let trimmed = line.trim();
+
+        if trimmed.len() > 100 {
+            warnings.push(format!("рядок {}: занадто довгий ({} символів, макс 100)", line_num, trimmed.len()));
+        }
+
+        if trimmed.contains("// TODO") || trimmed.contains("// FIXME") || trimmed.contains("// HACK") {
+            warnings.push(format!("рядок {}: знайдено TODO/FIXME/HACK", line_num));
+        }
+
+        if trimmed.starts_with("//") && trimmed.len() > 2 && !trimmed.starts_with("// ") && !trimmed.starts_with("///") {
+            warnings.push(format!("рядок {}: пробіл після // в коментарі", line_num));
+        }
+    }
+
+    // Перевірка парсером
+    match tryzub_lexer::tokenize(&source) {
+        Ok(tokens) => {
+            if let Err(e) = tryzub_parser::parse(tokens) {
+                warnings.push(format!("синтаксична помилка: {}", e));
+            }
+        }
+        Err(e) => warnings.push(format!("лексична помилка: {}", e)),
+    }
+
+    if warnings.is_empty() {
+        println!("✓ {} — помилок не знайдено", file.display());
+    } else {
+        println!("⚠ {} — {} попереджень:", file.display(), warnings.len());
+        for w in &warnings {
+            println!("  • {}", w);
+        }
+    }
 
     Ok(())
 }
