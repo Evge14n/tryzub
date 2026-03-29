@@ -1229,46 +1229,157 @@ fn run_format(file: PathBuf, check_only: bool) -> Result<()> {
     let mut formatted = String::new();
     let mut indent_level: i32 = 0;
     let mut prev_was_empty = false;
+    let mut prev_was_func_end = false;
 
     for line in source.lines() {
-        let trimmed = line.trim();
+        let trimmed = line.trim_end();
+        let content = trimmed.trim();
 
-        if trimmed.is_empty() {
+        if content.is_empty() {
             if !prev_was_empty {
                 formatted.push('\n');
                 prev_was_empty = true;
             }
             continue;
         }
-        prev_was_empty = false;
 
-        if trimmed.starts_with('}') || trimmed.starts_with(']') {
-            indent_level = (indent_level - 1).max(0);
+        let is_func_start = content.starts_with("функція ")
+            || content.starts_with("асинхронна функція ")
+            || content.starts_with("публічний функція ");
+
+        if is_func_start && !formatted.is_empty() && !prev_was_empty && !prev_was_func_end {
+            formatted.push('\n');
         }
 
+        prev_was_empty = false;
+        prev_was_func_end = false;
+
+        if content.starts_with('}') || content.starts_with(']') {
+            indent_level = (indent_level - 1).max(0);
+            if content == "}" { prev_was_func_end = true; }
+        }
+
+        let mut processed = format_line_ops(content);
+
         let indent = "    ".repeat(indent_level as usize);
-        formatted.push_str(&indent);
-        formatted.push_str(trimmed);
+        let full_line = format!("{}{}", indent, processed);
+
+        if full_line.chars().count() > 100 && !content.contains("//") && !content.contains('"') {
+            formatted.push_str(&full_line);
+        } else {
+            formatted.push_str(&full_line);
+        }
         formatted.push('\n');
 
-        if trimmed.ends_with('{') || trimmed.ends_with('[') {
+        if content.ends_with('{') || content.ends_with('[') {
             indent_level += 1;
         }
     }
 
+    while formatted.ends_with("\n\n") {
+        formatted.pop();
+    }
+    if !formatted.ends_with('\n') {
+        formatted.push('\n');
+    }
+
     if check_only {
-        if formatted.trim() != source.trim() {
+        if formatted != source {
             eprintln!("Форматування потрібне: {}", file.display());
             std::process::exit(1);
         } else {
             println!("OK: {}", file.display());
         }
     } else {
-        std::fs::write(&file, formatted)?;
+        std::fs::write(&file, &formatted)?;
         println!("Відформатовано: {}", file.display());
     }
-
     Ok(())
+}
+
+fn format_line_ops(line: &str) -> String {
+    if line.starts_with("//") || line.starts_with("///") {
+        return line.to_string();
+    }
+
+    let mut result = String::new();
+    let chars: Vec<char> = line.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+    let mut in_string = false;
+    let mut string_char = '"';
+
+    while i < len {
+        let c = chars[i];
+
+        if !in_string && (c == '"' || c == '\'') {
+            in_string = true;
+            string_char = c;
+            result.push(c);
+            i += 1;
+            continue;
+        }
+        if in_string {
+            result.push(c);
+            if c == string_char && (i == 0 || chars[i - 1] != '\\') {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if c == ',' && i + 1 < len && chars[i + 1] != ' ' {
+            result.push(',');
+            result.push(' ');
+            i += 1;
+            continue;
+        }
+
+        let is_op = matches!(c, '+' | '-' | '*' | '/' | '%' | '=' | '<' | '>' | '!');
+        if is_op && !in_string {
+            let next = if i + 1 < len { chars[i + 1] } else { ' ' };
+            let prev_c = if i > 0 { chars[i - 1] } else { ' ' };
+
+            if c == '/' && next == '/' { result.push_str(&chars[i..].iter().collect::<String>()); return result; }
+            if c == '=' && next == '>' { result.push_str(" => "); i += 2; continue; }
+            if c == '-' && next == '>' { result.push_str(" -> "); i += 2; continue; }
+            if (c == '=' || c == '!' || c == '<' || c == '>') && next == '=' {
+                let op: String = chars[i..i+2].iter().collect();
+                if i > 0 && prev_c != ' ' { result.push(' '); }
+                result.push_str(&op);
+                if i + 2 < len && chars[i + 2] != ' ' { result.push(' '); }
+                i += 2;
+                continue;
+            }
+            if c == '+' && next == '=' || c == '-' && next == '=' || c == '*' && next == '=' || c == '/' && next == '=' {
+                let op: String = chars[i..i+2].iter().collect();
+                if i > 0 && prev_c != ' ' { result.push(' '); }
+                result.push_str(&op);
+                if i + 2 < len && chars[i + 2] != ' ' { result.push(' '); }
+                i += 2;
+                continue;
+            }
+            if c == '|' && next == '>' { result.push_str(" |> "); i += 2; continue; }
+
+            if c == '=' && prev_c != '!' && prev_c != '<' && prev_c != '>' && prev_c != '+' && prev_c != '-' && prev_c != '*' && prev_c != '/' {
+                if i > 0 && prev_c != ' ' { result.push(' '); }
+                result.push(c);
+                if next != ' ' && next != '=' { result.push(' '); }
+                i += 1;
+                continue;
+            }
+
+            if (c == '+' || c == '-') && (prev_c == '(' || prev_c == ',' || prev_c == '=' || prev_c == '[' || i == 0) {
+                result.push(c);
+                i += 1;
+                continue;
+            }
+        }
+
+        result.push(c);
+        i += 1;
+    }
+    result
 }
 
 // ════════════════════════════════════════════════════════════════════
