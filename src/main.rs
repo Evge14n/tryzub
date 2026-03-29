@@ -63,6 +63,14 @@ enum Commands {
         file: PathBuf,
     },
 
+    /// Встановити залежності
+    #[command(name = "встановити")]
+    Install {
+        /// Git URL або назва пакету (якщо порожньо — встановити з тризуб.yaml)
+        #[arg(value_name = "ПАКЕТ")]
+        package: Option<String>,
+    },
+
     /// Інтерактивний режим (REPL)
     #[command(name = "інтерактив")]
     Repl,
@@ -181,6 +189,7 @@ fn main() {
         Commands::Lsp => run_lsp(),
         Commands::Format { file, check_only } => run_format(file, check_only),
         Commands::Lint { file } => run_lint(file),
+        Commands::Install { package } => run_install(package),
         Commands::Run { file, fast, jit, args } => run_file(file, fast, jit, args),
         Commands::Watch { file } => watch_file(file),
         Commands::Compile { file, output, native, kernel } => compile_file(file, output, native, kernel),
@@ -841,6 +850,97 @@ fn create_project(name: String) -> Result<()> {
     println!();
     println!("Запустити: tryzub запустити {}/src/головна.тризуб", name);
 
+    Ok(())
+}
+
+fn run_install(package: Option<String>) -> Result<()> {
+    let modules_dir = ".тризуб_модулі";
+    fs::create_dir_all(modules_dir)?;
+
+    match package {
+        Some(url) => {
+            let name = url.rsplit('/').next().unwrap_or("модуль")
+                .trim_end_matches(".git").to_string();
+
+            let target = format!("{}/{}", modules_dir, name);
+            if std::path::Path::new(&target).exists() {
+                println!("Оновлення {}...", name);
+                let output = std::process::Command::new("git")
+                    .args(["pull"])
+                    .current_dir(&target)
+                    .output()?;
+                if !output.status.success() {
+                    return Err(anyhow::anyhow!("git pull провалився: {}", String::from_utf8_lossy(&output.stderr)));
+                }
+            } else {
+                println!("Встановлення {}...", name);
+                let output = std::process::Command::new("git")
+                    .args(["clone", &url, &target])
+                    .output()?;
+                if !output.status.success() {
+                    return Err(anyhow::anyhow!("git clone провалився: {}", String::from_utf8_lossy(&output.stderr)));
+                }
+            }
+
+            let hash = get_git_hash(&target)?;
+            update_lock_file(&name, &url, &hash)?;
+
+            println!("[OK] {} встановлено ({})", name, &hash[..8.min(hash.len())]);
+        }
+        None => {
+            let yaml_path = "тризуб.yaml";
+            if !std::path::Path::new(yaml_path).exists() {
+                return Err(anyhow::anyhow!("тризуб.yaml не знайдено"));
+            }
+            let content = fs::read_to_string(yaml_path)?;
+            let mut installed = 0;
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.contains("://") || trimmed.ends_with(".git") {
+                    let url = trimmed.split(':').last().unwrap_or("").trim().trim_matches('"');
+                    if !url.is_empty() {
+                        run_install(Some(url.to_string()))?;
+                        installed += 1;
+                    }
+                }
+            }
+            if installed == 0 {
+                println!("Немає залежностей для встановлення");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn get_git_hash(dir: &str) -> Result<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(dir)
+        .output()?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn update_lock_file(name: &str, url: &str, hash: &str) -> Result<()> {
+    let lock_path = "тризуб.lock";
+    let mut content = if std::path::Path::new(lock_path).exists() {
+        fs::read_to_string(lock_path)?
+    } else {
+        String::new()
+    };
+
+    let entry = format!("[[пакет]]\nназва = \"{}\"\nджерело = \"{}\"\nверсія = \"{}\"\n\n", name, url, hash);
+
+    let marker = format!("назва = \"{}\"", name);
+    if let Some(start) = content.find(&marker) {
+        if let Some(block_start) = content[..start].rfind("[[пакет]]") {
+            let end = content[start..].find("\n\n").map(|i| start + i + 2).unwrap_or(content.len());
+            content.replace_range(block_start..end, &entry);
+        }
+    } else {
+        content.push_str(&entry);
+    }
+
+    fs::write(lock_path, content)?;
     Ok(())
 }
 

@@ -705,6 +705,8 @@ impl VM {
                 let mut paths = vec![
                     "stdlib".to_string(),
                     "../stdlib".to_string(),
+                    ".тризуб_модулі".to_string(),
+                    "../.тризуб_модулі".to_string(),
                 ];
                 if let Ok(env_paths) = std::env::var("ТРИЗУБ_ШЛЯХ") {
                     for p in env_paths.split(';') {
