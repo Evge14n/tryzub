@@ -385,8 +385,6 @@ pub struct VM {
     allocations: HashMap<usize, std::alloc::Layout>,
     /// Call stack для stack traces
     call_stack: Vec<CallFrame>,
-    /// Очікуваний тип повернення поточної функції
-    current_return_type: Option<tryzub_parser::Type>,
 }
 
 #[derive(Debug, Clone)]
@@ -745,7 +743,6 @@ impl VM {
             vector_index: None,
             allocations: HashMap::new(),
             call_stack: Vec::new(),
-            current_return_type: None,
         }
     }
 

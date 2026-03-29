@@ -1,10 +1,8 @@
 // Тризуб Native Compiler — AST → flat x86_64 binary
 // Генерує standalone бінарник без runtime залежностей
 
-use super::bytecode::*;
 use super::compiler::Compiler;
 use super::jit::JitCompiler;
-use std::io::Write;
 
 pub struct NativeCompiler;
 
