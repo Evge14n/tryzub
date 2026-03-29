@@ -11,7 +11,7 @@ use std::fs;
 #[derive(Parser)]
 #[command(name = "tryzub")]
 #[command(author = "******* <*******>")]
-#[command(version = "5.3.0")]
+#[command(version = "5.9.0")]
 #[command(about = "Тризуб — сучасна українська мова програмування ")]
 struct Cli {
     #[command(subcommand)]
@@ -138,24 +138,13 @@ enum WebCommands {
 }
 
 fn main() {
-    // Перевірити чи це скомпільований бінарник з вбудованим скриптом
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Ok(data) = fs::read(&exe_path) {
-            let magic = b"\xd0\xa2\xd0\xa0\xd0\x98\xd0\x97";
-            if data.len() > 16 && &data[data.len()-8..] == magic {
-                let len_bytes: [u8; 8] = data[data.len()-16..data.len()-8].try_into().unwrap();
-                let source_len = u64::from_le_bytes(len_bytes) as usize;
-                let source_start = data.len() - 16 - source_len;
-                if let Ok(source) = std::str::from_utf8(&data[source_start..source_start+source_len]) {
-                    let result = run_embedded_source(source);
-                    if let Err(e) = result {
-                        eprintln!("\x1b[1;31m[X] {}\x1b[0m", e);
-                        std::process::exit(1);
-                    }
-                    return;
-                }
-            }
+    if let Some(source) = extract_embedded_source() {
+        let result = run_embedded_source(&source);
+        if let Err(e) = result {
+            eprintln!("\x1b[1;31m[X] {}\x1b[0m", e);
+            std::process::exit(1);
         }
+        return;
     }
 
     let cli = Cli::parse();
@@ -215,7 +204,7 @@ fn main() {
         }
         Commands::Profile { file } => profile_file(file),
         Commands::Version => {
-            println!("Тризуб v5.3.0");
+            println!("Тризуб v5.9.0");
             println!("Ліцензія: MIT");
             println!("https://github.com/Evge14n/tryzub");
             Ok(())
@@ -583,7 +572,7 @@ fn run_tests(file: PathBuf) -> Result<()> {
 fn run_repl() -> Result<()> {
     use std::io::{self, Write, BufRead};
 
-    println!("\x1b[36mТризуб v5.7.0\x1b[0m — Інтерактивний режим");
+    println!("\x1b[36mТризуб v5.9.0\x1b[0m — Інтерактивний режим");
     println!("Введіть :допомога для списку команд");
     println!();
 
@@ -743,6 +732,16 @@ fn run_repl() -> Result<()> {
     Ok(())
 }
 
+fn extract_embedded_source() -> Option<String> {
+    let data = fs::read(std::env::current_exe().ok()?).ok()?;
+    let magic = b"\xd0\xa2\xd0\xa0\xd0\x98\xd0\x97";
+    if data.len() <= 16 || &data[data.len()-8..] != magic { return None; }
+    let len_bytes: [u8; 8] = data[data.len()-16..data.len()-8].try_into().ok()?;
+    let source_len = u64::from_le_bytes(len_bytes) as usize;
+    let source_start = data.len().checked_sub(16 + source_len)?;
+    String::from_utf8(data[source_start..source_start+source_len].to_vec()).ok()
+}
+
 fn run_embedded_source(source: &str) -> Result<()> {
     let tokens = tryzub_lexer::tokenize(source)?;
     let ast = tryzub_parser::parse(tokens)?;
@@ -761,7 +760,7 @@ fn create_project(name: String) -> Result<()> {
     fs::create_dir(format!("{}/src", name))?;
 
     let main_content = format!(r#"// Проект: {}
-// Створено за допомогою мови Тризуб v5.3.0
+// Створено за допомогою мови Тризуб v5.9.0
 
 функція головна() {{
     друк("Привіт з проекту {}! ")

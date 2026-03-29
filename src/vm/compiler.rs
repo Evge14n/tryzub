@@ -1,7 +1,6 @@
 // AST → Bytecode компілятор для Тризуб
 // Перетворює AST дерево в послідовність інструкцій bytecode VM
 
-use std::collections::HashMap;
 use tryzub_parser::*;
 use super::bytecode::*;
 

@@ -1,6 +1,5 @@
 use anyhow::Result;
 use thiserror::Error;
-use unicode_segmentation::UnicodeSegmentation;
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq)]

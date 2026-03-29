@@ -1,7 +1,6 @@
 use anyhow::Result;
 use thiserror::Error;
 use tryzub_lexer::{Token, TokenKind, StringPart};
-use std::fmt;
 
 // ════════════════════════════════════════════════════════════════════
 // AST — Абстрактне синтаксичне дерево мови Тризуб v2.0
