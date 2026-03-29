@@ -121,6 +121,7 @@ pub enum Value {
         name: Option<String>,
         generic_params: Vec<String>,
         params: Vec<Parameter>,
+        return_type: Option<tryzub_parser::Type>,
         body: Vec<Statement>,
         closure: Environment,
     },
@@ -379,6 +380,8 @@ pub struct VM {
     allocations: HashMap<usize, std::alloc::Layout>,
     /// Call stack для stack traces
     call_stack: Vec<CallFrame>,
+    /// Очікуваний тип повернення поточної функції
+    current_return_type: Option<tryzub_parser::Type>,
 }
 
 #[derive(Debug, Clone)]
@@ -736,6 +739,7 @@ impl VM {
             vector_index: None,
             allocations: HashMap::new(),
             call_stack: Vec::new(),
+            current_return_type: None,
         }
     }
 
@@ -764,19 +768,23 @@ impl VM {
 
     fn execute_declaration(&mut self, decl: Declaration) -> Result<()> {
         match decl {
-            Declaration::Variable { name, value, .. } => {
+            Declaration::Variable { name, ty, value, .. } => {
                 let val = if let Some(expr) = value {
                     self.evaluate_expression(expr)?
                 } else {
                     Value::Null
                 };
+                if let Some(ref expected_type) = ty {
+                    self.check_type(&val, expected_type)?;
+                }
                 self.current_env.borrow_mut().set(name, val);
             }
-            Declaration::Function { name, generic_params, params, body, contract, .. } => {
+            Declaration::Function { name, generic_params, params, return_type, body, contract, .. } => {
                 let func = Value::Function {
                     name: Some(name.clone()),
                     generic_params,
                     params,
+                    return_type,
                     body,
                     closure: self.current_env.clone(),
                 };
@@ -816,12 +824,13 @@ impl VM {
                 // Зберігаємо реалізовані методи
                 let mut implemented: HashSet<String> = HashSet::new();
                 for method in methods {
-                    if let Declaration::Function { name, generic_params, params, body, .. } = method {
+                    if let Declaration::Function { name, generic_params, params, return_type, body, .. } = method {
                         implemented.insert(name.clone());
                         let func = Value::Function {
                             name: Some(name.clone()),
                             generic_params,
                             params,
+                            return_type,
                             body: body.clone(),
                             closure: self.current_env.clone(),
                         };
@@ -852,6 +861,7 @@ impl VM {
                                     name: Some(tm.name.clone()),
                                     generic_params: vec![],
                                     params,
+                                    return_type: None,
                                     body: default_body.clone(),
                                     closure: self.current_env.clone(),
                                 };
@@ -868,11 +878,12 @@ impl VM {
             }
             Declaration::Impl { type_name: for_type, methods } => {
                 for method in methods {
-                    if let Declaration::Function { name, generic_params, params, body, .. } = method {
+                    if let Declaration::Function { name, generic_params, params, return_type, body, .. } = method {
                         let func = Value::Function {
                             name: Some(name.clone()),
                             generic_params,
                             params,
+                            return_type,
                             body: body.clone(),
                             closure: self.current_env.clone(),
                         };
@@ -1460,7 +1471,7 @@ impl VM {
 
     fn call_value(&mut self, func: Value, args: Vec<Value>) -> Result<Value> {
         match func {
-            Value::Function { params, body, closure, name, .. } => {
+            Value::Function { params, body, closure, name, return_type, .. } => {
                 let func_name = name.clone().unwrap_or_default();
 
                 // Кеш чистих функцій — якщо функція позначена як чиста,
@@ -1494,6 +1505,10 @@ impl VM {
                     } else {
                         Value::Null
                     };
+                    if !matches!(&param.ty, tryzub_parser::Type::Named(n) if n == "Будь")
+                        && !matches!(&param.ty, tryzub_parser::Type::SelfType) {
+                        self.check_type(&val, &param.ty)?;
+                    }
                     self.current_env.borrow_mut().set(param.name.clone(), val);
                 }
                 if let Some(contract) = self.contracts.get(&func_name).cloned() {
@@ -1538,6 +1553,14 @@ impl VM {
                                 ));
                             }
                         }
+                    }
+                }
+
+                if let Some(ref ret_ty) = return_type {
+                    if !matches!(ret_ty, tryzub_parser::Type::Named(n) if n == "Будь") {
+                        self.check_type(&result, ret_ty).map_err(|e| {
+                            anyhow::anyhow!("Функція '{}': {}", func_name, e)
+                        })?;
                     }
                 }
 
@@ -3151,6 +3174,75 @@ impl VM {
             }
         }
         trace
+    }
+
+    fn check_type(&self, value: &Value, expected: &tryzub_parser::Type) -> Result<()> {
+        use tryzub_parser::Type;
+        let ok = match expected {
+            Type::Цл8 | Type::Цл16 | Type::Цл32 | Type::Цл64 |
+            Type::Чс8 | Type::Чс16 | Type::Чс32 | Type::Чс64 => matches!(value, Value::Integer(_)),
+            Type::Дрб32 | Type::Дрб64 => matches!(value, Value::Float(_)),
+            Type::Лог => matches!(value, Value::Bool(_)),
+            Type::Тхт => matches!(value, Value::String(_)),
+            Type::Сим => matches!(value, Value::Char(_)),
+            Type::Slice(_) | Type::Array(_, _) => matches!(value, Value::Array(_)),
+            Type::Tuple(_) => matches!(value, Value::Tuple(_)),
+            Type::Named(name) => {
+                match value {
+                    Value::Struct(sname, _) => {
+                        sname == name || self.trait_impls.contains_key(&(sname.clone(), name.clone()))
+                    }
+                    Value::EnumVariant { type_name, .. } => {
+                        type_name == name || self.trait_impls.contains_key(&(type_name.clone(), name.clone()))
+                    }
+                    _ => {
+                        // Named тип що не є відомим struct/enum — пропускаємо перевірку
+                        // (може бути аліас або невідомий тип)
+                        !self.enum_types.contains_key(name)
+                    }
+                }
+            }
+            Type::Optional(_) => !matches!(value, Value::Null) || true,
+            Type::Function(_, _) => matches!(value, Value::Function { .. } | Value::Lambda { .. } | Value::BuiltinFn(_)),
+            _ => true,
+        };
+        if ok || matches!(value, Value::Null) {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(
+                "Невідповідність типів: очікувався '{}', отримано '{}' (значення: {})",
+                Self::type_to_ukrainian(expected),
+                value.type_name(),
+                self.format_value_short(value)
+            ))
+        }
+    }
+
+    fn type_to_ukrainian(ty: &tryzub_parser::Type) -> &'static str {
+        use tryzub_parser::Type;
+        match ty {
+            Type::Цл8 => "цл8", Type::Цл16 => "цл16", Type::Цл32 => "цл32", Type::Цл64 => "цл64",
+            Type::Чс8 => "чс8", Type::Чс16 => "чс16", Type::Чс32 => "чс32", Type::Чс64 => "чс64",
+            Type::Дрб32 => "дрб32", Type::Дрб64 => "дрб64",
+            Type::Лог => "лог", Type::Тхт => "тхт", Type::Сим => "сим",
+            Type::Slice(_) | Type::Array(_, _) => "масив",
+            Type::Tuple(_) => "кортеж",
+            Type::Function(_, _) => "функція",
+            _ => "тип",
+        }
+    }
+
+    fn format_value_short(&self, value: &Value) -> String {
+        match value {
+            Value::Integer(n) => n.to_string(),
+            Value::Float(f) => f.to_string(),
+            Value::String(s) if s.len() > 20 => format!("\"{}...\"", &s[..20]),
+            Value::String(s) => format!("\"{}\"", s),
+            Value::Bool(b) => if *b { "істина".to_string() } else { "хиба".to_string() },
+            Value::Array(a) => format!("[...] ({})", a.len()),
+            Value::Null => "нуль".to_string(),
+            _ => value.type_name().to_string(),
+        }
     }
 
     fn check_memory_access(&self, addr: usize, size: usize) -> Result<()> {
