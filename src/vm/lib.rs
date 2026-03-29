@@ -1522,9 +1522,10 @@ impl VM {
                     return Ok(Value::Null);
                 }
                 "позиція" => {
-                    if let Some(val) = args.first() {
+                    if let Some(func) = args.first() {
                         for (i, item) in arr.iter().enumerate() {
-                            if self.values_equal(item, val) {
+                            if self.call_value(func.clone(), vec![item.clone()])
+                                .map(|v| v.to_bool()).unwrap_or(false) {
                                 return Ok(Value::Integer(i as i64));
                             }
                         }
