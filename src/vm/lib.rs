@@ -2307,6 +2307,231 @@ impl VM {
         let _ = stream.flush();
     }
 
+    #[cfg(target_arch = "x86_64")]
+    fn encode_x86(mnemonic: &str, operands: &[&str], out: &mut Vec<u8>) -> Result<()> {
+        fn parse_reg(s: &str) -> Option<u8> {
+            match s.trim() {
+                "rax" | "eax" | "al" => Some(0), "rcx" | "ecx" | "cl" => Some(1),
+                "rdx" | "edx" | "dl" => Some(2), "rbx" | "ebx" | "bl" => Some(3),
+                "rsp" | "esp" => Some(4), "rbp" | "ebp" => Some(5),
+                "rsi" | "esi" => Some(6), "rdi" | "edi" => Some(7),
+                "r8" => Some(8), "r9" => Some(9), "r10" => Some(10), "r11" => Some(11),
+                "r12" => Some(12), "r13" => Some(13), "r14" => Some(14), "r15" => Some(15),
+                _ => None,
+            }
+        }
+        fn parse_imm(s: &str) -> Option<i64> {
+            let s = s.trim();
+            if let Some(hex) = s.strip_prefix("0x") {
+                i64::from_str_radix(hex, 16).ok()
+            } else {
+                s.parse().ok()
+            }
+        }
+        fn is_64bit(s: &str) -> bool {
+            let s = s.trim();
+            s.starts_with('r') || s.starts_with("r8") || s.starts_with("r9") ||
+            s.starts_with("r1") || s == "rsp" || s == "rbp" || s == "rsi" || s == "rdi"
+        }
+        fn modrm(md: u8, reg: u8, rm: u8) -> u8 { (md << 6) | ((reg & 7) << 3) | (rm & 7) }
+        fn rex(w: bool, r: u8, b: u8) -> u8 {
+            0x40 | if w { 8 } else { 0 } | if r > 7 { 4 } else { 0 } | if b > 7 { 1 } else { 0 }
+        }
+
+        match mnemonic.as_ref() {
+            "nop" => out.push(0x90),
+            "ret" => out.push(0xC3),
+            "hlt" => out.push(0xF4),
+            "cli" => out.push(0xFA),
+            "sti" => out.push(0xFB),
+            "cld" => out.push(0xFC),
+            "std" => out.push(0xFD),
+            "rdtsc" => { out.push(0x0F); out.push(0x31); }
+            "cpuid" => { out.push(0x0F); out.push(0xA2); }
+            "pause" => { out.push(0xF3); out.push(0x90); }
+            "mfence" => { out.extend_from_slice(&[0x0F, 0xAE, 0xF0]); }
+            "lfence" => { out.extend_from_slice(&[0x0F, 0xAE, 0xE8]); }
+            "sfence" => { out.extend_from_slice(&[0x0F, 0xAE, 0xF8]); }
+            "syscall" => { out.push(0x0F); out.push(0x05); }
+            "int" => {
+                let n = parse_imm(operands.first().unwrap_or(&"0")).unwrap_or(0) as u8;
+                out.push(0xCD); out.push(n);
+            }
+            "push" => {
+                if let Some(r) = parse_reg(operands.first().unwrap_or(&"")) {
+                    if r > 7 { out.push(0x41); }
+                    out.push(0x50 + (r & 7));
+                } else if let Some(imm) = parse_imm(operands.first().unwrap_or(&"")) {
+                    if imm >= -128 && imm <= 127 {
+                        out.push(0x6A); out.push(imm as u8);
+                    } else {
+                        out.push(0x68); out.extend_from_slice(&(imm as i32).to_le_bytes());
+                    }
+                }
+            }
+            "pop" => {
+                if let Some(r) = parse_reg(operands.first().unwrap_or(&"")) {
+                    if r > 7 { out.push(0x41); }
+                    out.push(0x58 + (r & 7));
+                }
+            }
+            "mov" => {
+                if operands.len() != 2 { return Err(anyhow::anyhow!("mov потребує 2 операнди")); }
+                let dst = operands[0].trim();
+                let src = operands[1].trim();
+                if let (Some(dr), Some(sr)) = (parse_reg(dst), parse_reg(src)) {
+                    out.push(rex(is_64bit(dst), sr, dr));
+                    out.push(0x89);
+                    out.push(modrm(3, sr, dr));
+                } else if let (Some(dr), Some(imm)) = (parse_reg(dst), parse_imm(src)) {
+                    if is_64bit(dst) {
+                        out.push(rex(true, 0, dr));
+                        out.push(0xB8 + (dr & 7));
+                        out.extend_from_slice(&imm.to_le_bytes());
+                    } else {
+                        if dr > 7 { out.push(0x41); }
+                        out.push(0xB8 + (dr & 7));
+                        out.extend_from_slice(&(imm as i32).to_le_bytes());
+                    }
+                } else {
+                    return Err(anyhow::anyhow!("mov: невідомі операнди '{}', '{}'", dst, src));
+                }
+            }
+            "add" | "sub" | "and" | "or" | "xor" | "cmp" => {
+                let op_code: u8 = match mnemonic.as_ref() {
+                    "add" => 0, "or" => 1, "and" => 4, "sub" => 5, "xor" => 6, "cmp" => 7, _ => 0
+                };
+                if operands.len() != 2 { return Err(anyhow::anyhow!("{} потребує 2 операнди", mnemonic)); }
+                let dst = operands[0].trim();
+                let src = operands[1].trim();
+                if let (Some(dr), Some(sr)) = (parse_reg(dst), parse_reg(src)) {
+                    out.push(rex(is_64bit(dst), sr, dr));
+                    out.push(0x01 + op_code * 8);
+                    out.push(modrm(3, sr, dr));
+                } else if let (Some(dr), Some(imm)) = (parse_reg(dst), parse_imm(src)) {
+                    out.push(rex(is_64bit(dst), 0, dr));
+                    if imm >= -128 && imm <= 127 {
+                        out.push(0x83);
+                        out.push(modrm(3, op_code, dr));
+                        out.push(imm as u8);
+                    } else {
+                        out.push(0x81);
+                        out.push(modrm(3, op_code, dr));
+                        out.extend_from_slice(&(imm as i32).to_le_bytes());
+                    }
+                }
+            }
+            "inc" => {
+                if let Some(r) = parse_reg(operands.first().unwrap_or(&"")) {
+                    out.push(rex(is_64bit(operands[0]), 0, r));
+                    out.push(0xFF); out.push(modrm(3, 0, r));
+                }
+            }
+            "dec" => {
+                if let Some(r) = parse_reg(operands.first().unwrap_or(&"")) {
+                    out.push(rex(is_64bit(operands[0]), 0, r));
+                    out.push(0xFF); out.push(modrm(3, 1, r));
+                }
+            }
+            "neg" => {
+                if let Some(r) = parse_reg(operands.first().unwrap_or(&"")) {
+                    out.push(rex(is_64bit(operands[0]), 0, r));
+                    out.push(0xF7); out.push(modrm(3, 3, r));
+                }
+            }
+            "not" => {
+                if let Some(r) = parse_reg(operands.first().unwrap_or(&"")) {
+                    out.push(rex(is_64bit(operands[0]), 0, r));
+                    out.push(0xF7); out.push(modrm(3, 2, r));
+                }
+            }
+            "imul" => {
+                if operands.len() == 2 {
+                    if let (Some(dr), Some(sr)) = (parse_reg(operands[0]), parse_reg(operands[1])) {
+                        out.push(rex(is_64bit(operands[0]), dr, sr));
+                        out.push(0x0F); out.push(0xAF);
+                        out.push(modrm(3, dr, sr));
+                    }
+                }
+            }
+            "idiv" | "div" | "mul" => {
+                let ext = match mnemonic.as_ref() { "mul" => 4, "div" => 6, "idiv" => 7, _ => 7 };
+                if let Some(r) = parse_reg(operands.first().unwrap_or(&"")) {
+                    out.push(rex(is_64bit(operands[0]), 0, r));
+                    out.push(0xF7); out.push(modrm(3, ext, r));
+                }
+            }
+            "shl" | "shr" | "sar" => {
+                let ext = match mnemonic.as_ref() { "shl" => 4, "shr" => 5, "sar" => 7, _ => 4 };
+                if operands.len() == 2 {
+                    if let Some(r) = parse_reg(operands[0]) {
+                        if operands[1].trim() == "cl" {
+                            out.push(rex(is_64bit(operands[0]), 0, r));
+                            out.push(0xD3); out.push(modrm(3, ext, r));
+                        } else if let Some(imm) = parse_imm(operands[1]) {
+                            out.push(rex(is_64bit(operands[0]), 0, r));
+                            out.push(0xC1); out.push(modrm(3, ext, r)); out.push(imm as u8);
+                        }
+                    }
+                }
+            }
+            "jmp" | "je" | "jne" | "jz" | "jnz" | "jl" | "jg" | "jle" | "jge" | "ja" | "jb" => {
+                if let Some(offset) = parse_imm(operands.first().unwrap_or(&"0")) {
+                    let rel = offset as i32;
+                    match mnemonic.as_ref() {
+                        "jmp" => { out.push(0xE9); out.extend_from_slice(&rel.to_le_bytes()); }
+                        "je" | "jz" => { out.extend_from_slice(&[0x0F, 0x84]); out.extend_from_slice(&rel.to_le_bytes()); }
+                        "jne" | "jnz" => { out.extend_from_slice(&[0x0F, 0x85]); out.extend_from_slice(&rel.to_le_bytes()); }
+                        "jl" => { out.extend_from_slice(&[0x0F, 0x8C]); out.extend_from_slice(&rel.to_le_bytes()); }
+                        "jg" => { out.extend_from_slice(&[0x0F, 0x8F]); out.extend_from_slice(&rel.to_le_bytes()); }
+                        "jle" => { out.extend_from_slice(&[0x0F, 0x8E]); out.extend_from_slice(&rel.to_le_bytes()); }
+                        "jge" => { out.extend_from_slice(&[0x0F, 0x8D]); out.extend_from_slice(&rel.to_le_bytes()); }
+                        "ja" => { out.extend_from_slice(&[0x0F, 0x87]); out.extend_from_slice(&rel.to_le_bytes()); }
+                        "jb" => { out.extend_from_slice(&[0x0F, 0x82]); out.extend_from_slice(&rel.to_le_bytes()); }
+                        _ => {}
+                    }
+                }
+            }
+            "call" => {
+                if let Some(r) = parse_reg(operands.first().unwrap_or(&"")) {
+                    if r > 7 { out.push(0x41); }
+                    out.push(0xFF); out.push(modrm(3, 2, r));
+                } else if let Some(offset) = parse_imm(operands.first().unwrap_or(&"0")) {
+                    out.push(0xE8); out.extend_from_slice(&(offset as i32).to_le_bytes());
+                }
+            }
+            "xchg" => {
+                if let (Some(a), Some(b)) = (parse_reg(operands.first().unwrap_or(&"")), parse_reg(operands.get(1).unwrap_or(&""))) {
+                    out.push(rex(is_64bit(operands[0]), a, b));
+                    out.push(0x87); out.push(modrm(3, a, b));
+                }
+            }
+            "test" => {
+                if let (Some(a), Some(b)) = (parse_reg(operands.first().unwrap_or(&"")), parse_reg(operands.get(1).unwrap_or(&""))) {
+                    out.push(rex(is_64bit(operands[0]), b, a));
+                    out.push(0x85); out.push(modrm(3, b, a));
+                }
+            }
+            "lea" => {
+                // lea reg, [rip + offset] — simplified: lea reg, [rel offset]
+                if operands.len() == 2 {
+                    if let (Some(dr), Some(imm)) = (parse_reg(operands[0]), parse_imm(operands[1].trim_start_matches('[').trim_end_matches(']'))) {
+                        out.push(rex(true, dr, 0));
+                        out.push(0x8D);
+                        out.push(modrm(0, dr, 5)); // RIP-relative
+                        out.extend_from_slice(&(imm as i32).to_le_bytes());
+                    }
+                }
+            }
+            "cqo" | "cdq" => {
+                if mnemonic == "cqo" { out.push(0x48); }
+                out.push(0x99);
+            }
+            _ => return Err(anyhow::anyhow!("Невідома інструкція: '{}'. Підтримуються: mov, add, sub, mul, div, and, or, xor, cmp, push, pop, jmp, je/jne/jl/jg, call, ret, nop, inc, dec, neg, not, shl, shr, imul, idiv, lea, test, xchg, int, syscall, rdtsc, cpuid, hlt, cli, sti, cld, std, pause, mfence, lfence, sfence", mnemonic)),
+        }
+        Ok(())
+    }
+
     fn check_memory_access(&self, addr: usize, size: usize) -> Result<()> {
         for (&base, layout) in &self.allocations {
             if addr >= base && addr + size <= base + layout.size() {
@@ -5328,39 +5553,26 @@ except Exception as e:
             // Inline assembly (x86_64)
             "asm_виконати" => {
                 let code = args.first().map(|v| v.to_display_string())
-                    .ok_or_else(|| anyhow::anyhow!("асемблер(\"інструкція\")"))?;
+                    .ok_or_else(|| anyhow::anyhow!("asm_виконати(\"mov rax, 42\\nret\")"))?;
                 #[cfg(target_arch = "x86_64")]
                 {
-                    let mut result: i64 = 0;
-                    unsafe {
-                        match code.trim() {
-                            "nop" => { std::arch::asm!("nop"); }
-                            "cpuid" => {
-                                let mut eax: u32;
-                                std::arch::asm!(
-                                    "push rbx",
-                                    "cpuid",
-                                    "pop rbx",
-                                    inout("eax") 0u32 => eax,
-                                    out("ecx") _,
-                                    out("edx") _,
-                                );
-                                result = eax as i64;
-                            }
-                            "rdtsc" => {
-                                let lo: u32; let hi: u32;
-                                std::arch::asm!("rdtsc", out("eax") lo, out("edx") hi);
-                                result = ((hi as i64) << 32) | lo as i64;
-                            }
-                            "pause" => { std::arch::asm!("pause"); }
-                            "mfence" => { std::arch::asm!("mfence"); }
-                            "lfence" => { std::arch::asm!("lfence"); }
-                            "sfence" => { std::arch::asm!("sfence"); }
-                            _ => return Err(anyhow::anyhow!(
-                                "Підтримані інструкції: nop, cpuid, rdtsc, pause, mfence, lfence, sfence"
-                            )),
-                        }
+                    let mut machine_code: Vec<u8> = Vec::new();
+                    for line in code.lines() {
+                        let line = line.trim();
+                        if line.is_empty() || line.starts_with(';') || line.starts_with('#') { continue; }
+                        let parts: Vec<&str> = line.splitn(2, |c: char| c == ' ' || c == '\t').collect();
+                        let mnemonic = parts[0].to_lowercase();
+                        let operands: Vec<&str> = if parts.len() > 1 {
+                            parts[1].split(',').map(|s| s.trim()).collect()
+                        } else { vec![] };
+                        Self::encode_x86(&mnemonic, &operands, &mut machine_code)?;
                     }
+                    if machine_code.is_empty() || machine_code.last() != Some(&0xC3) {
+                        machine_code.push(0xC3); // ret
+                    }
+
+                    let jit_fn = jit::JitFunction::new(machine_code);
+                    let result = jit_fn.execute_raw();
                     Ok(Value::Integer(result))
                 }
                 #[cfg(not(target_arch = "x86_64"))]
