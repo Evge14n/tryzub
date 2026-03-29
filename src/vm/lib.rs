@@ -6639,12 +6639,12 @@ except Exception as e:
             self.effect_handlers.truncate(10);
         }
 
-        // Mark-and-sweep для closures: якщо Environment (Rc<RefCell<Scope>>)
-        // має strong_count == 1, значить тільки поточне значення тримає scope
-        // і він може бути обрізаний (parent chain pruned)
-        self.sweep_scope(&self.current_env.clone());
+        // Scope pruning вимкнено — sweep_scope некоректно видаляє parent scopes
+        // що ще містять живі змінні (наприклад в циклах for з >10K ітерацій).
+        // Потрібна повноцінна reachability analysis перед pruning.
     }
 
+    #[allow(dead_code)]
     fn sweep_scope(&self, env: &Environment) {
         let scope = env.borrow();
         if let Some(ref parent) = scope.parent {

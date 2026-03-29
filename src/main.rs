@@ -1055,7 +1055,7 @@ a { color: #0057b7; }
 // ════════════════════════════════════════════════════════════════════
 
 fn run_lsp() -> Result<()> {
-    use std::io::{self, BufRead, Write, Read, BufReader};
+    use std::io::{self, BufRead, Write, Read};
     use std::collections::HashMap;
 
     let mut documents: HashMap<String, String> = HashMap::new();
@@ -1284,7 +1284,7 @@ fn lsp_hover(source: &str, line: usize, col: usize) -> serde_json::Value {
                 if let tryzub_parser::Declaration::Function { name, params, return_type, .. } = decl {
                     if name == &word {
                         let params_str: Vec<String> = params.iter().map(|p| {
-                            if let Some(ref ty) = p.default { format!("{} = ...", p.name) }
+                            if p.default.is_some() { format!("{} = ...", p.name) }
                             else { p.name.clone() }
                         }).collect();
                         let ret = match return_type {
@@ -1359,7 +1359,7 @@ fn run_format(file: PathBuf, check_only: bool) -> Result<()> {
             if content == "}" { prev_was_func_end = true; }
         }
 
-        let mut processed = format_line_ops(content);
+        let processed = format_line_ops(content);
 
         let indent = "    ".repeat(indent_level as usize);
         let full_line = format!("{}{}", indent, processed);
@@ -1525,7 +1525,7 @@ fn run_lint(file: PathBuf) -> Result<()> {
 }
 
 fn lint_ast(program: &tryzub_parser::Program, _source: &str, warnings: &mut Vec<String>) {
-    use tryzub_parser::{Declaration, Statement, Expression};
+    use tryzub_parser::Declaration;
 
     for decl in &program.declarations {
         if let Declaration::Function { name, params, body, .. } = decl {
