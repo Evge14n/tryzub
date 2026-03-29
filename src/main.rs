@@ -816,17 +816,26 @@ fn create_project(name: String) -> Result<()> {
 
     fs::write(format!("{}/src/головна.тризуб", name), main_content)?;
 
-    let project_file = format!(r#"[проект]
-назва = "{}"
-версія = "0.1.0"
-автор = ""
+    let project_file = format!(r#"назва: {}
+версія: 0.1.0
+автор: ""
+опис: ""
+
+залежності: {{}}
+
+скрипти:
+  запустити: тризуб запустити src/головна.тризуб
+  тестувати: тризуб тестувати src/
 "#, name);
 
-    fs::write(format!("{}/проект.toml", name), project_file)?;
+    fs::write(format!("{}/тризуб.yaml", name), project_file)?;
+
+    let gitignore = "target/\n*.exe\n*.db\n";
+    fs::write(format!("{}/.gitignore", name), gitignore)?;
 
     println!("[OK] Проект '{}' створено", name);
     println!("{}/", name);
-    println!("   ├── проект.toml");
+    println!("   ├── тризуб.yaml");
     println!("   └── src/");
     println!("       └── головна.тризуб");
     println!();
