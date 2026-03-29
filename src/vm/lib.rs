@@ -1461,6 +1461,147 @@ impl VM {
                     let parts: Vec<String> = arr.iter().map(|v| v.to_display_string()).collect();
                     return Ok(Value::String(parts.join(sep)));
                 }
+                "зрізати" | "зріз" => {
+                    let from = match args.first() { Some(Value::Integer(n)) => *n as usize, _ => 0 };
+                    let to = match args.get(1) { Some(Value::Integer(n)) => *n as usize, _ => arr.len() };
+                    return Ok(Value::Array(arr[from.min(arr.len())..to.min(arr.len())].to_vec()));
+                }
+                "розгорнути" => {
+                    let mut result = Vec::new();
+                    for item in arr {
+                        if let Value::Array(inner) = item { result.extend(inner.iter().cloned()); }
+                        else { result.push(item.clone()); }
+                    }
+                    return Ok(Value::Array(result));
+                }
+                "зшити" => {
+                    if let Some(Value::Array(other)) = args.first() {
+                        let pairs: Vec<Value> = arr.iter().zip(other.iter())
+                            .map(|(a, b)| Value::Array(vec![a.clone(), b.clone()]))
+                            .collect();
+                        return Ok(Value::Array(pairs));
+                    }
+                    return Err(anyhow::anyhow!(".зшити() потребує масив"));
+                }
+                "пронумерувати" => {
+                    let result: Vec<Value> = arr.iter().enumerate()
+                        .map(|(i, v)| Value::Array(vec![Value::Integer(i as i64), v.clone()]))
+                        .collect();
+                    return Ok(Value::Array(result));
+                }
+                "будь_який" => {
+                    if let Some(func) = args.first() {
+                        for item in arr {
+                            if self.call_value(func.clone(), vec![item.clone()])?.to_bool() {
+                                return Ok(Value::Bool(true));
+                            }
+                        }
+                        return Ok(Value::Bool(false));
+                    }
+                    return Ok(Value::Bool(arr.iter().any(|v| v.to_bool())));
+                }
+                "кожен" => {
+                    if let Some(func) = args.first() {
+                        for item in arr {
+                            if !self.call_value(func.clone(), vec![item.clone()])?.to_bool() {
+                                return Ok(Value::Bool(false));
+                            }
+                        }
+                        return Ok(Value::Bool(true));
+                    }
+                    return Ok(Value::Bool(arr.iter().all(|v| v.to_bool())));
+                }
+                "знайти" => {
+                    if let Some(func) = args.first() {
+                        for item in arr {
+                            if self.call_value(func.clone(), vec![item.clone()])?.to_bool() {
+                                return Ok(item.clone());
+                            }
+                        }
+                    }
+                    return Ok(Value::Null);
+                }
+                "позиція" => {
+                    if let Some(val) = args.first() {
+                        for (i, item) in arr.iter().enumerate() {
+                            if self.values_equal(item, val) {
+                                return Ok(Value::Integer(i as i64));
+                            }
+                        }
+                    }
+                    return Ok(Value::Integer(-1));
+                }
+                "унікальні" => {
+                    let mut result = Vec::new();
+                    for item in arr {
+                        if !result.iter().any(|v| self.values_equal(v, item)) {
+                            result.push(item.clone());
+                        }
+                    }
+                    return Ok(Value::Array(result));
+                }
+                "частини" => {
+                    if let Some(Value::Integer(n)) = args.first() {
+                        let n = *n as usize;
+                        if n == 0 { return Err(anyhow::anyhow!(".частини(0) — недопустимо")); }
+                        let chunks: Vec<Value> = arr.chunks(n)
+                            .map(|c| Value::Array(c.to_vec()))
+                            .collect();
+                        return Ok(Value::Array(chunks));
+                    }
+                    return Err(anyhow::anyhow!(".частини() потребує число"));
+                }
+                "мін" => {
+                    return Ok(arr.iter().min_by(|a, b| match (a, b) {
+                        (Value::Integer(x), Value::Integer(y)) => x.cmp(y),
+                        (Value::Float(x), Value::Float(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
+                        _ => std::cmp::Ordering::Equal,
+                    }).cloned().unwrap_or(Value::Null));
+                }
+                "макс" => {
+                    return Ok(arr.iter().max_by(|a, b| match (a, b) {
+                        (Value::Integer(x), Value::Integer(y)) => x.cmp(y),
+                        (Value::Float(x), Value::Float(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
+                        _ => std::cmp::Ordering::Equal,
+                    }).cloned().unwrap_or(Value::Null));
+                }
+                "сума" => {
+                    let mut total: i64 = 0;
+                    for item in arr {
+                        if let Value::Integer(n) = item { total += n; }
+                    }
+                    return Ok(Value::Integer(total));
+                }
+                "видалити_за" => {
+                    if let Some(Value::Integer(i)) = args.first() {
+                        let i = *i as usize;
+                        if i < arr.len() {
+                            let mut new_arr = arr.clone();
+                            new_arr.remove(i);
+                            return Ok(Value::Array(new_arr));
+                        }
+                    }
+                    return Ok(Value::Array(arr.clone()));
+                }
+                "вставити" => {
+                    if args.len() == 2 {
+                        if let Value::Integer(i) = &args[0] {
+                            let i = *i as usize;
+                            let mut new_arr = arr.clone();
+                            new_arr.insert(i.min(new_arr.len()), args[1].clone());
+                            return Ok(Value::Array(new_arr));
+                        }
+                    }
+                    return Err(anyhow::anyhow!(".вставити(індекс, значення)"));
+                }
+                "кожен_виконати" => {
+                    if let Some(func) = args.first() {
+                        for item in arr {
+                            self.call_value(func.clone(), vec![item.clone()])?;
+                        }
+                    }
+                    return Ok(Value::Null);
+                }
                 _ => {}
             }
         }
@@ -1518,6 +1659,87 @@ impl VM {
                     }
                     return Err(anyhow::anyhow!(".підрядок() потребує 2 числа"));
                 }
+                "символи" => {
+                    return Ok(Value::Array(s.chars().map(|c| Value::String(c.to_string())).collect()));
+                }
+                "знайти" => {
+                    if let Some(Value::String(sub)) = args.first() {
+                        return Ok(match s.find(sub.as_str()) {
+                            Some(i) => Value::Integer(s[..i].chars().count() as i64),
+                            None => Value::Integer(-1),
+                        });
+                    }
+                    return Ok(Value::Integer(-1));
+                }
+                "індекс" => {
+                    if let Some(Value::Integer(i)) = args.first() {
+                        return Ok(s.chars().nth(*i as usize)
+                            .map(|c| Value::String(c.to_string()))
+                            .unwrap_or(Value::Null));
+                    }
+                    return Ok(Value::Null);
+                }
+                "кількість" => {
+                    if let Some(Value::String(sub)) = args.first() {
+                        return Ok(Value::Integer(s.matches(sub.as_str()).count() as i64));
+                    }
+                    return Ok(Value::Integer(0));
+                }
+                "обернути" => {
+                    return Ok(Value::String(s.chars().rev().collect()));
+                }
+                "повторити" => {
+                    if let Some(Value::Integer(n)) = args.first() {
+                        return Ok(Value::String(s.repeat(*n as usize)));
+                    }
+                    return Ok(Value::String(s.clone()));
+                }
+                "зліва" => {
+                    if let Some(Value::Integer(n)) = args.first() {
+                        let n = *n as usize;
+                        let width = s.chars().count();
+                        if width >= n { return Ok(Value::String(s.clone())); }
+                        let pad = match args.get(1) { Some(Value::String(p)) => p.chars().next().unwrap_or(' '), _ => ' ' };
+                        let padding: String = std::iter::repeat(pad).take(n - width).collect();
+                        return Ok(Value::String(format!("{}{}", s, padding)));
+                    }
+                    return Ok(Value::String(s.clone()));
+                }
+                "справа" => {
+                    if let Some(Value::Integer(n)) = args.first() {
+                        let n = *n as usize;
+                        let width = s.chars().count();
+                        if width >= n { return Ok(Value::String(s.clone())); }
+                        let pad = match args.get(1) { Some(Value::String(p)) => p.chars().next().unwrap_or(' '), _ => ' ' };
+                        let padding: String = std::iter::repeat(pad).take(n - width).collect();
+                        return Ok(Value::String(format!("{}{}", padding, s)));
+                    }
+                    return Ok(Value::String(s.clone()));
+                }
+                "обрізати_зліва" => return Ok(Value::String(s.trim_start().to_string())),
+                "обрізати_справа" => return Ok(Value::String(s.trim_end().to_string())),
+                "це_число" => return Ok(Value::Bool(s.parse::<f64>().is_ok())),
+                "це_літера" => return Ok(Value::Bool(s.chars().all(|c| c.is_alphabetic()))),
+                "це_цифра" => return Ok(Value::Bool(s.chars().all(|c| c.is_ascii_digit()))),
+                "в_число" => {
+                    return Ok(match s.parse::<i64>() {
+                        Ok(n) => Value::Integer(n),
+                        Err(_) => match s.parse::<f64>() {
+                            Ok(f) => Value::Float(f),
+                            Err(_) => Value::Null,
+                        }
+                    });
+                }
+                "з'єднати" => {
+                    if let Some(Value::Array(arr)) = args.first() {
+                        let joined: String = arr.iter().map(|v| v.to_display_string()).collect::<Vec<_>>().join(&s);
+                        return Ok(Value::String(joined));
+                    }
+                    return Ok(Value::String(s.clone()));
+                }
+                "рядки" => {
+                    return Ok(Value::Array(s.lines().map(|l| Value::String(l.to_string())).collect()));
+                }
                 _ => {}
             }
         }
@@ -1561,6 +1783,57 @@ impl VM {
                         return Ok(Value::Dict(new_pairs));
                     }
                     return Err(anyhow::anyhow!("словник.видалити потребує ключ"));
+                }
+                "отримати_або" => {
+                    if args.len() == 2 {
+                        for (k, v) in pairs {
+                            if self.values_equal(k, &args[0]) { return Ok(v.clone()); }
+                        }
+                        return Ok(args[1].clone());
+                    }
+                    return Err(anyhow::anyhow!(".отримати_або(ключ, значення_за_замовчуванням)"));
+                }
+                "об_єднати" => {
+                    if let Some(Value::Dict(other)) = args.first() {
+                        let mut result = pairs.clone();
+                        for (k, v) in other {
+                            if let Some(existing) = result.iter_mut().find(|(ek, _)| self.values_equal(ek, k)) {
+                                existing.1 = v.clone();
+                            } else {
+                                result.push((k.clone(), v.clone()));
+                            }
+                        }
+                        return Ok(Value::Dict(result));
+                    }
+                    return Err(anyhow::anyhow!(".об'єднати() потребує словник"));
+                }
+                "фільтрувати" => {
+                    if let Some(func) = args.first() {
+                        let mut result = Vec::new();
+                        for (k, v) in pairs {
+                            let keep = self.call_value(func.clone(), vec![k.clone(), v.clone()])?;
+                            if keep.to_bool() { result.push((k.clone(), v.clone())); }
+                        }
+                        return Ok(Value::Dict(result));
+                    }
+                    return Err(anyhow::anyhow!(".фільтрувати() потребує функцію"));
+                }
+                "перетворити" => {
+                    if let Some(func) = args.first() {
+                        let mut result = Vec::new();
+                        for (k, v) in pairs {
+                            let new_val = self.call_value(func.clone(), vec![k.clone(), v.clone()])?;
+                            result.push((k.clone(), new_val));
+                        }
+                        return Ok(Value::Dict(result));
+                    }
+                    return Err(anyhow::anyhow!(".перетворити() потребує функцію"));
+                }
+                "пусто" => return Ok(Value::Bool(pairs.is_empty())),
+                "пари" => {
+                    return Ok(Value::Array(pairs.iter()
+                        .map(|(k, v)| Value::Array(vec![k.clone(), v.clone()]))
+                        .collect()));
                 }
                 _ => {}
             }
@@ -1616,6 +1889,40 @@ impl VM {
                     }
                     return Err(anyhow::anyhow!("множина.різниця потребує множину"));
                 }
+                "підмножина" => {
+                    if let Some(Value::Set(other)) = args.first() {
+                        return Ok(Value::Bool(items.iter().all(|v| other.iter().any(|o| self.values_equal(v, o)))));
+                    }
+                    return Ok(Value::Bool(false));
+                }
+                "надмножина" => {
+                    if let Some(Value::Set(other)) = args.first() {
+                        return Ok(Value::Bool(other.iter().all(|v| items.iter().any(|o| self.values_equal(v, o)))));
+                    }
+                    return Ok(Value::Bool(false));
+                }
+                "неперетинні" => {
+                    if let Some(Value::Set(other)) = args.first() {
+                        return Ok(Value::Bool(!items.iter().any(|v| other.iter().any(|o| self.values_equal(v, o)))));
+                    }
+                    return Ok(Value::Bool(true));
+                }
+                "симетрична_різниця" => {
+                    if let Some(Value::Set(other)) = args.first() {
+                        let mut result: Vec<Value> = items.iter()
+                            .filter(|v| !other.iter().any(|o| self.values_equal(v, o)))
+                            .cloned().collect();
+                        for o in other {
+                            if !items.iter().any(|v| self.values_equal(v, o)) {
+                                result.push(o.clone());
+                            }
+                        }
+                        return Ok(Value::Set(result));
+                    }
+                    return Err(anyhow::anyhow!("множина.симетрична_різниця потребує множину"));
+                }
+                "пусто" => return Ok(Value::Bool(items.is_empty())),
+                "в_масив" => return Ok(Value::Array(items.clone())),
                 _ => {}
             }
         }
