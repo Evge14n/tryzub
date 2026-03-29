@@ -1,0 +1,103 @@
+{
+  "scopeName": "source.tryzub",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#constants" },
+    { "include": "#functions" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "name": "comment.line.double-slash.tryzub", "match": "///.*$" },
+        { "name": "comment.line.double-slash.tryzub", "match": "//.*$" },
+        { "name": "comment.block.tryzub", "begin": "/\\*", "end": "\\*/" }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.tryzub",
+          "begin": "ф\"",
+          "end": "\"",
+          "patterns": [
+            { "name": "constant.character.escape.tryzub", "match": "\\\\." },
+            { "name": "variable.other.interpolation.tryzub", "match": "\\{[^}]+\\}" }
+          ]
+        },
+        {
+          "name": "string.quoted.double.tryzub",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            { "name": "constant.character.escape.tryzub", "match": "\\\\." }
+          ]
+        },
+        {
+          "name": "string.quoted.single.tryzub",
+          "begin": "'",
+          "end": "'",
+          "patterns": [
+            { "name": "constant.character.escape.tryzub", "match": "\\\\." }
+          ]
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        { "name": "constant.numeric.float.tryzub", "match": "\\b\\d+\\.\\d+\\b" },
+        { "name": "constant.numeric.hex.tryzub", "match": "\\b0x[0-9a-fA-F]+\\b" },
+        { "name": "constant.numeric.binary.tryzub", "match": "\\b0b[01]+\\b" },
+        { "name": "constant.numeric.integer.tryzub", "match": "\\b\\d+\\b" }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.tryzub",
+          "match": "\\b(якщо|інакше|поки|для|в|від|до|зіставити|повернути|перервати|продовжити|спробувати|зловити|нарешті|чекати|віддати|імпорт|як|з)\\b"
+        },
+        {
+          "name": "keyword.declaration.tryzub",
+          "match": "\\b(функція|змінна|стала|структура|тип|трейт|реалізація|модуль|асинхронна|публічний|приватний)\\b"
+        },
+        {
+          "name": "keyword.other.tryzub",
+          "match": "\\b(друк|себе|це|потік|все|перегони|канал)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.tryzub",
+          "match": "\\b(цл8|цл16|цл32|цл64|дрб32|дрб64|лог|тхт|сим|чс8|чс16|чс32|чс64)\\b"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        { "name": "constant.language.tryzub", "match": "\\b(істина|хиба|нуль|Нічого)\\b" },
+        { "name": "support.function.builtin.tryzub", "match": "\\b(Деякий|Успіх|Помилка)\\b" }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "name": "entity.name.function.tryzub",
+          "match": "\\b([а-яА-ЯіІїЇєЄґҐa-zA-Z_][а-яА-ЯіІїЇєЄґҐa-zA-Z0-9_]*)\\s*(?=\\()"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        { "name": "keyword.operator.tryzub", "match": "\\|>|->|=>|==|!=|<=|>=|\\+=|-=|\\*=|/=|&&|\\|\\||!" },
+        { "name": "keyword.operator.tryzub", "match": "[+\\-*/%<>=]" }
+      ]
+    }
+  }
+}

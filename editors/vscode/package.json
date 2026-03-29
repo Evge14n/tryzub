@@ -1,0 +1,28 @@
+{
+  "name": "tryzub-lang",
+  "displayName": "Тризуб",
+  "description": "Syntax highlighting and LSP support for the Tryzub programming language",
+  "version": "1.0.0",
+  "publisher": "Evge14n",
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Programming Languages"],
+  "activationEvents": ["onLanguage:tryzub"],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "tryzub",
+        "aliases": ["Тризуб", "Tryzub", "tryzub"],
+        "extensions": [".тризуб", ".tryzub"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "tryzub",
+        "scopeName": "source.tryzub",
+        "path": "./syntaxes/tryzub.tmLanguage.json"
+      }
+    ]
+  }
+}
