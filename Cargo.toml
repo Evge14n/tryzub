@@ -30,6 +30,7 @@ serde_json = "1.0"
 colored = "2.0"
 chrono = "0.4"
 notify = "6.1"
+rustyline = "14.0"
 
 # Core modules (always included)
 tryzub-lexer = { path = "src/lexer" }

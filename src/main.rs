@@ -616,25 +616,28 @@ fn run_tests(file: PathBuf) -> Result<()> {
 }
 
 fn run_repl() -> Result<()> {
-    use std::io::{self, Write, BufRead};
+    use rustyline::error::ReadlineError;
 
-    println!("\x1b[36mТризуб v5.9.0\x1b[0m — Інтерактивний режим");
+    let history_path = dirs_history_path();
+
+    let mut rl = rustyline::DefaultEditor::new()?;
+    let _ = rl.load_history(&history_path);
+
+    println!("\x1b[36mТризуб v7.8.0\x1b[0m — Інтерактивний режим");
     println!("Введіть :допомога для списку команд");
     println!();
 
-    // Збираємо декларації між введеннями
     let mut declarations_source = String::new();
-    let stdin = io::stdin();
 
     loop {
-        print!("тризуб> ");
-        io::stdout().flush().ok();
-
-        let mut line = String::new();
-        if stdin.lock().read_line(&mut line).is_err() || line.is_empty() {
-            break;
-        }
-        let line = line.trim().to_string();
+        let readline = rl.readline("тризуб> ");
+        let line = match readline {
+            Ok(l) => l.trim().to_string(),
+            Err(ReadlineError::Interrupted | ReadlineError::Eof) => break,
+            Err(e) => { eprintln!("Помилка: {}", e); break; }
+        };
+        if line.is_empty() { continue; }
+        rl.add_history_entry(&line).ok();
 
         if line.is_empty() {
             continue;
@@ -747,13 +750,14 @@ fn run_repl() -> Result<()> {
             let mut full = line.clone();
             let mut brace_count: i32 = full.matches('{').count() as i32 - full.matches('}').count() as i32;
             while brace_count > 0 {
-                print!("  ... ");
-                io::stdout().flush().ok();
-                let mut next_line = String::new();
-                if stdin.lock().read_line(&mut next_line).is_err() { break; }
-                full.push('\n');
-                full.push_str(next_line.trim());
-                brace_count += next_line.matches('{').count() as i32 - next_line.matches('}').count() as i32;
+                match rl.readline("  ... ") {
+                    Ok(next_line) => {
+                        full.push('\n');
+                        full.push_str(next_line.trim());
+                        brace_count += next_line.matches('{').count() as i32 - next_line.matches('}').count() as i32;
+                    }
+                    _ => break,
+                }
             }
             declarations_source.push('\n');
             declarations_source.push_str(&full);
@@ -773,7 +777,16 @@ fn run_repl() -> Result<()> {
         }
     }
 
+    let _ = rl.save_history(&history_path);
     Ok(())
+}
+
+fn dirs_history_path() -> String {
+    if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
+        format!("{}/.тризуб_історія", home.to_string_lossy())
+    } else {
+        ".тризуб_історія".to_string()
+    }
 }
 
 fn extract_embedded_source() -> Option<String> {
