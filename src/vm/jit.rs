@@ -257,6 +257,11 @@ impl JitFunction {
         }
         result
     }
+
+    pub fn execute_raw(&self) -> i64 {
+        let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(self.ptr) };
+        func()
+    }
 }
 
 #[cfg(target_os = "windows")]
