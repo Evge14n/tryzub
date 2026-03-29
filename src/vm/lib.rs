@@ -1,5 +1,7 @@
 pub mod bytecode;
 pub mod compiler;
+#[cfg(target_arch = "x86_64")]
+pub mod jit;
 
 // Тризуб VM v5.3.2
 
@@ -626,6 +628,7 @@ impl VM {
             for name in &["зовнішня_бібліотека", "зовнішній_виклик",
                 "виділити_пам'ять", "звільнити_пам'ять",
                 "записати_байт", "прочитати_байт", "записати_слово", "прочитати_слово",
+                "копіювати_пам'ять", "заповнити_пам'ять",
                 "розмір_вказівника", "asm_виконати", "системний_виклик"] {
                 scope.set(name.to_string(), Value::BuiltinFn(name.to_string()));
             }
@@ -2298,6 +2301,17 @@ impl VM {
         let _ = stream.write_all(header.as_bytes());
         let _ = stream.write_all(&final_body);
         let _ = stream.flush();
+    }
+
+    fn check_memory_access(&self, addr: usize, size: usize) -> Result<()> {
+        for (&base, layout) in &self.allocations {
+            if addr >= base && addr + size <= base + layout.size() {
+                return Ok(());
+            }
+        }
+        Err(anyhow::anyhow!(
+            "Доступ до пам'яті за межами виділеного блоку: 0x{:x} (розмір {})", addr, size
+        ))
     }
 
     fn guess_mime(path: &str) -> String {
@@ -5256,34 +5270,53 @@ except Exception as e:
                 }
             }
 
-            // Пам'ять: записати байт
             "записати_байт" => {
                 let addr = match args.get(0) { Some(Value::Integer(n)) => *n as usize, _ => return Err(anyhow::anyhow!("записати_байт(адреса, значення)")) };
                 let val = match args.get(1) { Some(Value::Integer(n)) => *n as u8, _ => return Err(anyhow::anyhow!("записати_байт(адреса, значення)")) };
+                self.check_memory_access(addr, 1)?;
                 unsafe { *(addr as *mut u8) = val; }
                 Ok(Value::Null)
             }
 
-            // Пам'ять: прочитати байт
             "прочитати_байт" => {
                 let addr = match args.first() { Some(Value::Integer(n)) => *n as usize, _ => return Err(anyhow::anyhow!("прочитати_байт(адреса)")) };
+                self.check_memory_access(addr, 1)?;
                 let val = unsafe { *(addr as *const u8) };
                 Ok(Value::Integer(val as i64))
             }
 
-            // Пам'ять: записати i64
             "записати_слово" => {
                 let addr = match args.get(0) { Some(Value::Integer(n)) => *n as usize, _ => return Err(anyhow::anyhow!("записати_слово(адреса, значення)")) };
                 let val = match args.get(1) { Some(Value::Integer(n)) => *n, _ => return Err(anyhow::anyhow!("записати_слово(адреса, значення)")) };
+                self.check_memory_access(addr, 8)?;
                 unsafe { *(addr as *mut i64) = val; }
                 Ok(Value::Null)
             }
 
-            // Пам'ять: прочитати i64
             "прочитати_слово" => {
                 let addr = match args.first() { Some(Value::Integer(n)) => *n as usize, _ => return Err(anyhow::anyhow!("прочитати_слово(адреса)")) };
+                self.check_memory_access(addr, 8)?;
                 let val = unsafe { *(addr as *const i64) };
                 Ok(Value::Integer(val))
+            }
+
+            "копіювати_пам'ять" => {
+                let dst = match args.get(0) { Some(Value::Integer(n)) => *n as usize, _ => return Err(anyhow::anyhow!("копіювати_пам'ять(куди, звідки, розмір)")) };
+                let src = match args.get(1) { Some(Value::Integer(n)) => *n as usize, _ => return Err(anyhow::anyhow!("копіювати_пам'ять(куди, звідки, розмір)")) };
+                let size = match args.get(2) { Some(Value::Integer(n)) => *n as usize, _ => return Err(anyhow::anyhow!("копіювати_пам'ять(куди, звідки, розмір)")) };
+                self.check_memory_access(dst, size)?;
+                self.check_memory_access(src, size)?;
+                unsafe { std::ptr::copy_nonoverlapping(src as *const u8, dst as *mut u8, size); }
+                Ok(Value::Null)
+            }
+
+            "заповнити_пам'ять" => {
+                let addr = match args.get(0) { Some(Value::Integer(n)) => *n as usize, _ => return Err(anyhow::anyhow!("заповнити_пам'ять(адреса, значення, розмір)")) };
+                let val = match args.get(1) { Some(Value::Integer(n)) => *n as u8, _ => return Err(anyhow::anyhow!("заповнити_пам'ять(адреса, значення, розмір)")) };
+                let size = match args.get(2) { Some(Value::Integer(n)) => *n as usize, _ => return Err(anyhow::anyhow!("заповнити_пам'ять(адреса, значення, розмір)")) };
+                self.check_memory_access(addr, size)?;
+                unsafe { std::ptr::write_bytes(addr as *mut u8, val, size); }
+                Ok(Value::Null)
             }
 
             // Пам'ять: розмір вказівника

@@ -31,6 +31,10 @@ enum Commands {
         #[arg(long = "швидко", default_value = "false")]
         fast: bool,
 
+        /// JIT компіляція в машинний код x86_64
+        #[arg(long = "jit", default_value = "false")]
+        jit: bool,
+
         /// Аргументи програми
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
@@ -157,7 +161,7 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Commands::Run { file, fast, args } => run_file(file, fast, args),
+        Commands::Run { file, fast, jit, args } => run_file(file, fast, jit, args),
         Commands::Watch { file } => watch_file(file),
         Commands::Compile { file, output } => compile_file(file, output),
         Commands::Check { file } => check_file(file),
@@ -166,7 +170,7 @@ fn main() {
         Commands::Repl => run_repl(),
         Commands::Web { action } => match action {
             WebCommands::New { name } => create_web_project(name),
-            WebCommands::Run { file, port } => run_file(file, false, vec![port.to_string()]),
+            WebCommands::Run { file, port } => run_file(file, false, false, vec![port.to_string()]),
         },
         Commands::Benchmark { iterations } => {
             println!("\nТризуб VM — Бенчмарк швидкості\n");
@@ -279,7 +283,7 @@ fn profile_file(file: PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn run_file(file: PathBuf, fast: bool, args: Vec<String>) -> Result<()> {
+fn run_file(file: PathBuf, fast: bool, jit: bool, args: Vec<String>) -> Result<()> {
     let source = fs::read_to_string(&file)
         .map_err(|e| anyhow::anyhow!("Не вдалося прочитати файл {:?}: {}", file, e))?;
 
@@ -310,7 +314,24 @@ fn run_file(file: PathBuf, fast: bool, args: Vec<String>) -> Result<()> {
         }
     };
 
-    if fast {
+    if jit {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let compiler = tryzub_vm::compiler::Compiler::new();
+            let chunk = compiler.compile_program(&ast);
+            let jit_compiler = tryzub_vm::jit::JitCompiler::new();
+            let jit_fn = jit_compiler.compile(&chunk);
+            let start = std::time::Instant::now();
+            let result = jit_fn.execute();
+            let elapsed = start.elapsed();
+            if result != 0 {
+                eprintln!("  [JIT] Результат: {} ({:.3}мс)", result, elapsed.as_secs_f64() * 1000.0);
+            }
+            return Ok(());
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        return Err(anyhow::anyhow!("JIT доступний тільки на x86_64"));
+    } else if fast {
         let compiler = tryzub_vm::compiler::Compiler::new();
         let chunk = compiler.compile_program(&ast);
         let mut bc_vm = tryzub_vm::bytecode::BytecodeVM::new(chunk.local_count);
@@ -387,7 +408,7 @@ fn watch_file(file: PathBuf) -> Result<()> {
     loop {
         print!("\x1b[33m▶ Запуск...\x1b[0m\n");
         let start = std::time::Instant::now();
-        match run_file(file.clone(), false, vec![]) {
+        match run_file(file.clone(), false, false, vec![]) {
             Ok(_) => {
                 let elapsed = start.elapsed();
                 println!("\x1b[32m✓ Виконано за {:.1}мс\x1b[0m", elapsed.as_secs_f64() * 1000.0);
