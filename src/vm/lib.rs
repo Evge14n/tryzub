@@ -6627,24 +6627,40 @@ except Exception as e:
     // ── GC: Збирач сміття для циклічних посилань ──
 
     fn run_gc(&mut self) {
-        // Очищуємо кеш генераторів що вже не використовуються
         if self.generator_cache.len() > 100 {
             self.generator_cache.clear();
         }
-
-        // Очищуємо кеш чистих функцій якщо він переповнений
         if self.pure_cache.len() > 5_000 {
             self.pure_cache.clear();
         }
-
-        // Очищуємо стек ефектів
         if self.effect_handlers.len() > 50 {
             self.effect_handlers.truncate(10);
         }
 
-        // Скидаємо Rc strong_count перевірку для середовищ
-        // Rc<RefCell<Scope>> з strong_count == 1 означає що scope більше не використовується
-        // (GC для Rc-based environments — періодична очистка)
+        // Mark-and-sweep для closures: якщо Environment (Rc<RefCell<Scope>>)
+        // має strong_count == 1, значить тільки поточне значення тримає scope
+        // і він може бути обрізаний (parent chain pruned)
+        self.sweep_scope(&self.current_env.clone());
+    }
+
+    fn sweep_scope(&self, env: &Environment) {
+        let scope = env.borrow();
+        if let Some(ref parent) = scope.parent {
+            // Якщо parent тримається тільки цим scope (strong_count == 2: parent's own + this ref)
+            // і parent не є global — можна обрізати parent chain
+            if Rc::strong_count(parent) <= 2 && !std::ptr::eq(parent.as_ptr(), self.global_env.as_ptr()) {
+                let parent_scope = parent.borrow();
+                if let Some(ref grandparent) = parent_scope.parent {
+                    if Rc::strong_count(grandparent) <= 2
+                        && !std::ptr::eq(grandparent.as_ptr(), self.global_env.as_ptr())
+                    {
+                        // grandparent більше нікому не потрібен — drop chain зупиниться тут
+                        drop(parent_scope);
+                        parent.borrow_mut().parent = None;
+                    }
+                }
+            }
+        }
     }
 
     // ── Pattern Matching ──
