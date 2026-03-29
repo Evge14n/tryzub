@@ -280,11 +280,12 @@ type Environment = Rc<RefCell<Scope>>;
 pub struct Scope {
     variables: HashMap<String, Value>,
     parent: Option<Environment>,
+    inferred_types: HashMap<String, String>,
 }
 
 impl Scope {
     fn new(parent: Option<Environment>) -> Self {
-        Self { variables: HashMap::new(), parent }
+        Self { variables: HashMap::new(), parent, inferred_types: HashMap::new() }
     }
 
     fn get(&self, name: &str) -> Option<Value> {
@@ -298,11 +299,26 @@ impl Scope {
     }
 
     fn set(&mut self, name: String, value: Value) {
+        if !self.inferred_types.contains_key(&name) {
+            let type_name = value.type_name().to_string();
+            if type_name != "нуль" && type_name != "функція" {
+                self.inferred_types.insert(name.clone(), type_name);
+            }
+        }
         self.variables.insert(name, value);
     }
 
     fn update(&mut self, name: &str, value: Value) -> Result<()> {
         if self.variables.contains_key(name) {
+            if let Some(expected_type) = self.inferred_types.get(name) {
+                let actual_type = value.type_name().to_string();
+                if &actual_type != expected_type && actual_type != "нуль" {
+                    return Err(anyhow::anyhow!(
+                        "Невідповідність типів: змінна '{}' має тип '{}', не можна присвоїти '{}'",
+                        name, expected_type, actual_type
+                    ));
+                }
+            }
             self.variables.insert(name.to_string(), value);
             Ok(())
         } else if let Some(parent) = &self.parent {
