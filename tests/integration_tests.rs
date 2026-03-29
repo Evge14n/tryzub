@@ -8,6 +8,12 @@ fn run(source: &str) {
     execute(program, vec![]).expect("Помилка виконання");
 }
 
+fn run_err(source: &str) -> String {
+    let tokens = tokenize(source).expect("Помилка лексичного аналізу");
+    let program = parse(tokens).expect("Помилка синтаксичного аналізу");
+    execute(program, vec![]).unwrap_err().to_string()
+}
+
 #[test]
 fn test_hello_world() {
     run(r#"
@@ -297,6 +303,84 @@ fn test_break_continue() {
         сума += і
     }
     друк(сума)
+}
+"#);
+}
+
+// ═══ БЛОК 1: Stack traces та професійні помилки ═══
+
+#[test]
+fn test_stack_trace_contains_call_chain() {
+    let err = run_err(r#"
+функція рівень_1() { рівень_2() }
+функція рівень_2() { рівень_3() }
+функція рівень_3() { паніка("глибока помилка") }
+функція головна() { рівень_1() }
+"#);
+    assert!(err.contains("рівень_3()"), "Stack trace має містити рівень_3: {}", err);
+    assert!(err.contains("рівень_2()"), "Stack trace має містити рівень_2: {}", err);
+    assert!(err.contains("рівень_1()"), "Stack trace має містити рівень_1: {}", err);
+}
+
+#[test]
+fn test_did_you_mean_suggestion() {
+    let err = run_err(r#"
+функція головна() {
+    стала повідомлення = "привіт"
+    друк(повідомленя)
+}
+"#);
+    assert!(err.contains("повідомлення"), "Має підказати: {}", err);
+    assert!(err.contains("Т001"), "Має мати error code: {}", err);
+}
+
+#[test]
+fn test_try_catch_finally_integration() {
+    run(r#"
+функція головна() {
+    змінна зловлено = хиба
+    змінна фінал = хиба
+    спробувати {
+        паніка("тест")
+    } зловити п {
+        зловлено = істина
+    } нарешті {
+        фінал = істина
+    }
+    перевірити (зловлено)
+    перевірити (фінал)
+}
+"#);
+}
+
+#[test]
+fn test_assert_eq_fail_message() {
+    let err = run_err(r#"
+функція головна() { перевірити_рівне(1, 2, "має впасти") }
+"#);
+    assert!(err.contains("має впасти"), "Msg: {}", err);
+}
+
+#[test]
+fn test_optional_parens_integration() {
+    run(r#"
+функція головна() {
+    якщо істина { друк("ok") }
+    для і в 1..4 { друк(і) }
+    змінна х = 3
+    поки х > 0 { х = х - 1 }
+    перевірити (х == 0)
+}
+"#);
+}
+
+#[test]
+fn test_default_params_integration() {
+    run(r#"
+функція додати(а, б = 10) { повернути а + б }
+функція головна() {
+    перевірити_рівне(15, додати(5))
+    перевірити_рівне(25, додати(5, 20))
 }
 "#);
 }
