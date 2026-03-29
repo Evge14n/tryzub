@@ -2,6 +2,8 @@ pub mod bytecode;
 pub mod compiler;
 #[cfg(target_arch = "x86_64")]
 pub mod jit;
+#[cfg(target_arch = "x86_64")]
+pub mod native;
 
 // Тризуб VM v5.3.2
 
