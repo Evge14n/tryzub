@@ -956,95 +956,268 @@ a { color: #0057b7; }
 
 fn run_lsp() -> Result<()> {
     use std::io::{self, BufRead, Write, Read, BufReader};
+    use std::collections::HashMap;
 
-    let stdin = io::stdin();
-    let stdout = io::stdout();
-    let reader = BufReader::new(stdin.lock());
-    let mut out = stdout.lock();
+    let mut documents: HashMap<String, String> = HashMap::new();
+    let mut stdin = io::stdin().lock();
+    let mut stdout = io::stdout().lock();
 
     eprintln!("Тризуб LSP сервер запущено");
 
-    let mut content_length: usize = 0;
-    let mut in_header = true;
+    let lsp_send = |out: &mut io::StdoutLock, msg: &serde_json::Value| -> Result<()> {
+        let s = serde_json::to_string(msg)?;
+        write!(out, "Content-Length: {}\r\n\r\n{}", s.len(), s)?;
+        out.flush()?;
+        Ok(())
+    };
 
-    for line in reader.lines() {
-        let line = line?;
+    let mut header_buf = String::new();
+    loop {
+        header_buf.clear();
+        let mut content_length: usize = 0;
 
-        if in_header {
-            if line.starts_with("Content-Length:") {
-                content_length = line[15..].trim().parse().unwrap_or(0);
-            } else if line.is_empty() {
-                in_header = false;
-                let mut body = vec![0u8; content_length];
-                io::stdin().lock().read_exact(&mut body).ok();
-                let body_str = String::from_utf8_lossy(&body);
+        loop {
+            let mut line = String::new();
+            if stdin.read_line(&mut line)? == 0 { return Ok(()); }
+            let trimmed = line.trim();
+            if trimmed.is_empty() { break; }
+            if trimmed.starts_with("Content-Length:") {
+                content_length = trimmed[15..].trim().parse().unwrap_or(0);
+            }
+        }
+
+        if content_length == 0 { continue; }
+
+        {
+            let mut body = vec![0u8; content_length];
+            stdin.read_exact(&mut body)?;
+            let body_str = String::from_utf8_lossy(&body);
 
                 if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&body_str) {
                     let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
                     let id = msg.get("id").cloned();
+                    let params = msg.get("params").cloned().unwrap_or(serde_json::Value::Null);
 
-                    let response = match method {
+                    match method {
                         "initialize" => {
-                            serde_json::json!({
-                                "jsonrpc": "2.0",
-                                "id": id,
+                            lsp_send(&mut stdout, &serde_json::json!({
+                                "jsonrpc": "2.0", "id": id,
                                 "result": {
                                     "capabilities": {
                                         "textDocumentSync": 1,
-                                        "completionProvider": { "triggerCharacters": ["."] },
+                                        "completionProvider": { "triggerCharacters": [".", ":"] },
                                         "hoverProvider": true,
-                                        "definitionProvider": true,
-                                        "diagnosticProvider": { "interFileDependencies": false, "workspaceDiagnostics": false }
+                                        "definitionProvider": true
                                     },
-                                    "serverInfo": { "name": "тризуб-lsp", "version": "1.0.0" }
+                                    "serverInfo": { "name": "тризуб-lsp", "version": "2.0.0" }
                                 }
-                            })
+                            }))?;
                         }
-                        "initialized" => continue,
+                        "initialized" => {}
                         "shutdown" => {
-                            serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": null })
+                            lsp_send(&mut stdout, &serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": null }))?;
                         }
-                        "exit" => break,
+                        "exit" => return Ok(()),
+
+                        "textDocument/didOpen" => {
+                            if let (Some(uri), Some(text)) = (
+                                params.pointer("/textDocument/uri").and_then(|v| v.as_str()),
+                                params.pointer("/textDocument/text").and_then(|v| v.as_str()),
+                            ) {
+                                documents.insert(uri.to_string(), text.to_string());
+                                let diags = lsp_diagnose(text);
+                                lsp_send(&mut stdout, &serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "method": "textDocument/publishDiagnostics",
+                                    "params": { "uri": uri, "diagnostics": diags }
+                                }))?;
+                            }
+                        }
+                        "textDocument/didChange" => {
+                            if let Some(uri) = params.pointer("/textDocument/uri").and_then(|v| v.as_str()) {
+                                if let Some(text) = params.pointer("/contentChanges/0/text").and_then(|v| v.as_str()) {
+                                    documents.insert(uri.to_string(), text.to_string());
+                                    let diags = lsp_diagnose(text);
+                                    lsp_send(&mut stdout, &serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "method": "textDocument/publishDiagnostics",
+                                        "params": { "uri": uri, "diagnostics": diags }
+                                    }))?;
+                                }
+                            }
+                        }
+                        "textDocument/didClose" => {
+                            if let Some(uri) = params.pointer("/textDocument/uri").and_then(|v| v.as_str()) {
+                                documents.remove(uri);
+                            }
+                        }
+
                         "textDocument/completion" => {
-                            let builtins = vec![
-                                "друк", "довжина", "тип_значення", "діапазон",
-                                "фільтрувати", "перетворити", "згорнути", "сортувати",
-                                "корінь", "синус", "косинус", "абс", "мін", "макс",
-                                "файл_прочитати", "файл_записати", "json_розібрати",
-                            ];
-                            let items: Vec<serde_json::Value> = builtins.iter().map(|name| {
-                                serde_json::json!({ "label": name, "kind": 3 })
-                            }).collect();
-                            serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": items })
+                            let uri = params.pointer("/textDocument/uri").and_then(|v| v.as_str()).unwrap_or("");
+                            let source = documents.get(uri).cloned().unwrap_or_default();
+                            let items = lsp_completions(&source);
+                            lsp_send(&mut stdout, &serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": items }))?;
                         }
+
                         "textDocument/hover" => {
-                            serde_json::json!({
-                                "jsonrpc": "2.0", "id": id,
-                                "result": { "contents": "Тризуб — українська мова програмування" }
-                            })
+                            let uri = params.pointer("/textDocument/uri").and_then(|v| v.as_str()).unwrap_or("");
+                            let line = params.pointer("/position/line").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                            let col = params.pointer("/position/character").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                            let source = documents.get(uri).cloned().unwrap_or_default();
+                            let hover = lsp_hover(&source, line, col);
+                            lsp_send(&mut stdout, &serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": hover }))?;
                         }
+
                         _ => {
                             if id.is_some() {
-                                serde_json::json!({
+                                lsp_send(&mut stdout, &serde_json::json!({
                                     "jsonrpc": "2.0", "id": id,
                                     "error": { "code": -32601, "message": "Метод не підтримується" }
-                                })
-                            } else { continue; }
+                                }))?;
+                            }
                         }
-                    };
-
-                    let resp_str = serde_json::to_string(&response)?;
-                    write!(out, "Content-Length: {}\r\n\r\n{}", resp_str.len(), resp_str)?;
-                    out.flush()?;
+                    }
                 }
-
-                in_header = true;
-                content_length = 0;
             }
         }
     }
 
-    Ok(())
+fn lsp_diagnose(source: &str) -> Vec<serde_json::Value> {
+    let mut diags = Vec::new();
+    match tryzub_lexer::tokenize(source) {
+        Ok(tokens) => {
+            if let Err(e) = tryzub_parser::parse(tokens) {
+                let msg = e.to_string();
+                let line = msg.split("рядку ").nth(1)
+                    .and_then(|s| s.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse::<u64>().ok())
+                    .unwrap_or(1).saturating_sub(1);
+                diags.push(serde_json::json!({
+                    "range": { "start": { "line": line, "character": 0 }, "end": { "line": line, "character": 100 } },
+                    "severity": 1,
+                    "source": "тризуб",
+                    "message": msg
+                }));
+            }
+        }
+        Err(e) => {
+            diags.push(serde_json::json!({
+                "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 100 } },
+                "severity": 1,
+                "source": "тризуб",
+                "message": e.to_string()
+            }));
+        }
+    }
+    diags
+}
+
+fn lsp_completions(source: &str) -> Vec<serde_json::Value> {
+    let mut items = Vec::new();
+
+    let builtins = [
+        ("друк", "Вивести значення в консоль"),
+        ("довжина", "Довжина масиву або рядка"),
+        ("діапазон", "Створити ліниве Range(від, до)"),
+        ("фільтрувати", "Фільтрувати масив за предикатом"),
+        ("перетворити", "Перетворити кожен елемент масиву"),
+        ("згорнути", "Згорнути масив до одного значення"),
+        ("сортувати", "Відсортувати масив"),
+        ("корінь", "Квадратний корінь"), ("синус", "sin(x)"), ("косинус", "cos(x)"),
+        ("абс", "Модуль числа"), ("мін", "Мінімум"), ("макс", "Максимум"),
+        ("тип_значення", "Тип значення як рядок"),
+        ("файл_прочитати", "Прочитати файл як рядок"),
+        ("файл_записати", "Записати рядок у файл"),
+        ("json_розібрати", "Розібрати JSON рядок"),
+        ("все", "Виконати всі функції паралельно"),
+        ("перегони", "Перший результат з масиву функцій"),
+        ("потік", "Запустити функцію в потоці"),
+    ];
+    for (name, detail) in &builtins {
+        items.push(serde_json::json!({ "label": name, "kind": 3, "detail": detail }));
+    }
+
+    if let Ok(tokens) = tryzub_lexer::tokenize(source) {
+        if let Ok(program) = tryzub_parser::parse(tokens) {
+            for decl in &program.declarations {
+                match decl {
+                    tryzub_parser::Declaration::Function { name, params, .. } => {
+                        let params_str: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+                        items.push(serde_json::json!({
+                            "label": name,
+                            "kind": 3,
+                            "detail": format!("функція {}({})", name, params_str.join(", "))
+                        }));
+                    }
+                    tryzub_parser::Declaration::Variable { name, .. } => {
+                        items.push(serde_json::json!({ "label": name, "kind": 6 }));
+                    }
+                    tryzub_parser::Declaration::Struct { name, fields, .. } => {
+                        let fields_str: Vec<String> = fields.iter().map(|f| f.name.clone()).collect();
+                        items.push(serde_json::json!({
+                            "label": name,
+                            "kind": 22,
+                            "detail": format!("структура {} {{ {} }}", name, fields_str.join(", "))
+                        }));
+                    }
+                    tryzub_parser::Declaration::Module { name, .. } => {
+                        items.push(serde_json::json!({ "label": name, "kind": 9 }));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    items
+}
+
+fn lsp_hover(source: &str, line: usize, col: usize) -> serde_json::Value {
+    let target_line = source.lines().nth(line).unwrap_or("");
+    let word = extract_word_at(target_line, col);
+
+    if word.is_empty() {
+        return serde_json::Value::Null;
+    }
+
+    if let Ok(tokens) = tryzub_lexer::tokenize(source) {
+        if let Ok(program) = tryzub_parser::parse(tokens) {
+            for decl in &program.declarations {
+                if let tryzub_parser::Declaration::Function { name, params, return_type, .. } = decl {
+                    if name == &word {
+                        let params_str: Vec<String> = params.iter().map(|p| {
+                            if let Some(ref ty) = p.default { format!("{} = ...", p.name) }
+                            else { p.name.clone() }
+                        }).collect();
+                        let ret = match return_type {
+                            Some(ty) => format!(" -> {:?}", ty),
+                            None => String::new(),
+                        };
+                        return serde_json::json!({
+                            "contents": { "kind": "markdown", "value": format!("```тризуб\nфункція {}({}){}\n```", name, params_str.join(", "), ret) }
+                        });
+                    }
+                }
+                if let tryzub_parser::Declaration::Struct { name, fields, .. } = decl {
+                    if name == &word {
+                        let f: Vec<String> = fields.iter().map(|f| f.name.clone()).collect();
+                        return serde_json::json!({
+                            "contents": { "kind": "markdown", "value": format!("```тризуб\nструктура {} {{ {} }}\n```", name, f.join(", ")) }
+                        });
+                    }
+                }
+            }
+        }
+    }
+    serde_json::json!({ "contents": format!("**{}**", word) })
+}
+
+fn extract_word_at(line: &str, col: usize) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    if col >= chars.len() { return String::new(); }
+    let mut start = col;
+    let mut end = col;
+    while start > 0 && (chars[start - 1].is_alphanumeric() || chars[start - 1] == '_') { start -= 1; }
+    while end < chars.len() && (chars[end].is_alphanumeric() || chars[end] == '_') { end += 1; }
+    chars[start..end].iter().collect()
 }
 
 // ════════════════════════════════════════════════════════════════════
