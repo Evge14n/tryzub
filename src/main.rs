@@ -1106,28 +1106,24 @@ fn run_lint(file: PathBuf) -> Result<()> {
     let source = std::fs::read_to_string(&file)?;
     let mut warnings = Vec::new();
 
+    // Текстові перевірки
     for (i, line) in source.lines().enumerate() {
         let line_num = i + 1;
         let trimmed = line.trim();
-
-        if trimmed.len() > 100 {
-            warnings.push(format!("рядок {}: занадто довгий ({} символів, макс 100)", line_num, trimmed.len()));
+        if trimmed.chars().count() > 100 {
+            warnings.push(format!("рядок {}: занадто довгий ({} символів, макс 100)", line_num, trimmed.chars().count()));
         }
-
         if trimmed.contains("// TODO") || trimmed.contains("// FIXME") || trimmed.contains("// HACK") {
             warnings.push(format!("рядок {}: знайдено TODO/FIXME/HACK", line_num));
         }
-
-        if trimmed.starts_with("//") && trimmed.len() > 2 && !trimmed.starts_with("// ") && !trimmed.starts_with("///") {
-            warnings.push(format!("рядок {}: пробіл після // в коментарі", line_num));
-        }
     }
 
-    // Перевірка парсером
+    // AST аналіз
     match tryzub_lexer::tokenize(&source) {
         Ok(tokens) => {
-            if let Err(e) = tryzub_parser::parse(tokens) {
-                warnings.push(format!("синтаксична помилка: {}", e));
+            match tryzub_parser::parse(tokens) {
+                Ok(program) => lint_ast(&program, &source, &mut warnings),
+                Err(e) => warnings.push(format!("синтаксична помилка: {}", e)),
             }
         }
         Err(e) => warnings.push(format!("лексична помилка: {}", e)),
@@ -1141,6 +1137,163 @@ fn run_lint(file: PathBuf) -> Result<()> {
             println!("  • {}", w);
         }
     }
-
     Ok(())
+}
+
+fn lint_ast(program: &tryzub_parser::Program, _source: &str, warnings: &mut Vec<String>) {
+    use tryzub_parser::{Declaration, Statement, Expression};
+
+    for decl in &program.declarations {
+        if let Declaration::Function { name, params, body, .. } = decl {
+            if body.len() > 50 {
+                warnings.push(format!("функція '{}': занадто довга ({} операторів, макс 50)", name, body.len()));
+            }
+
+            let mut declared: Vec<String> = params.iter()
+                .filter(|p| p.name != "себе")
+                .map(|p| p.name.clone())
+                .collect();
+            for stmt in body { collect_declared_vars(stmt, &mut declared); }
+
+            let mut used = std::collections::HashSet::new();
+            for stmt in body { collect_used_idents_stmt(stmt, &mut used); }
+
+            for var in &declared {
+                if !used.contains(var.as_str()) && !var.starts_with('_') {
+                    let is_param = params.iter().any(|p| &p.name == var);
+                    if is_param {
+                        warnings.push(format!("функція '{}': параметр '{}' не використовується", name, var));
+                    } else {
+                        warnings.push(format!("функція '{}': змінна '{}' оголошена але не використовується", name, var));
+                    }
+                }
+            }
+
+            for stmt in body { check_empty_catch(stmt, name, warnings); }
+        }
+    }
+}
+
+fn collect_declared_vars(stmt: &tryzub_parser::Statement, declared: &mut Vec<String>) {
+    use tryzub_parser::Statement;
+    match stmt {
+        Statement::Declaration(tryzub_parser::Declaration::Variable { name, .. }) => {
+            declared.push(name.clone());
+        }
+        Statement::Block(stmts) => {
+            for s in stmts { collect_declared_vars(s, declared); }
+        }
+        Statement::If { then_branch, else_branch, .. } => {
+            collect_declared_vars(then_branch, declared);
+            if let Some(eb) = else_branch { collect_declared_vars(eb, declared); }
+        }
+        Statement::While { body, .. } => collect_declared_vars(body, declared),
+        Statement::For { variable, body, .. } => {
+            declared.push(variable.clone());
+            collect_declared_vars(body, declared);
+        }
+        Statement::ForIn { body, .. } => collect_declared_vars(body, declared),
+        _ => {}
+    }
+}
+
+fn collect_used_idents_stmt(stmt: &tryzub_parser::Statement, used: &mut std::collections::HashSet<String>) {
+    use tryzub_parser::Statement;
+    match stmt {
+        Statement::Expression(expr) => collect_used_idents_expr(expr, used),
+        Statement::Declaration(tryzub_parser::Declaration::Variable { value: Some(expr), .. }) => {
+            collect_used_idents_expr(expr, used);
+        }
+        Statement::Return(Some(expr)) => collect_used_idents_expr(expr, used),
+        Statement::Block(stmts) => {
+            for s in stmts { collect_used_idents_stmt(s, used); }
+        }
+        Statement::If { condition, then_branch, else_branch, .. } => {
+            collect_used_idents_expr(condition, used);
+            collect_used_idents_stmt(then_branch, used);
+            if let Some(eb) = else_branch { collect_used_idents_stmt(eb, used); }
+        }
+        Statement::While { condition, body } => {
+            collect_used_idents_expr(condition, used);
+            collect_used_idents_stmt(body, used);
+        }
+        Statement::For { from, to, body, .. } => {
+            collect_used_idents_expr(from, used);
+            collect_used_idents_expr(to, used);
+            collect_used_idents_stmt(body, used);
+        }
+        Statement::ForIn { iterable, body, .. } => {
+            collect_used_idents_expr(iterable, used);
+            collect_used_idents_stmt(body, used);
+        }
+        Statement::Yield(expr) => collect_used_idents_expr(expr, used),
+        Statement::Assignment { target, value, .. } => {
+            collect_used_idents_expr(target, used);
+            collect_used_idents_expr(value, used);
+        }
+        _ => {}
+    }
+}
+
+fn collect_used_idents_expr(expr: &tryzub_parser::Expression, used: &mut std::collections::HashSet<String>) {
+    use tryzub_parser::Expression;
+    match expr {
+        Expression::Identifier(name) => { used.insert(name.clone()); }
+        Expression::Binary { left, right, .. } => {
+            collect_used_idents_expr(left, used);
+            collect_used_idents_expr(right, used);
+        }
+        Expression::Unary { operand, .. } => collect_used_idents_expr(operand, used),
+        Expression::Call { callee, args } => {
+            collect_used_idents_expr(callee, used);
+            for a in args { collect_used_idents_expr(a, used); }
+        }
+        Expression::MethodCall { object, args, .. } => {
+            collect_used_idents_expr(object, used);
+            for a in args { collect_used_idents_expr(a, used); }
+        }
+        Expression::MemberAccess { object, .. } => collect_used_idents_expr(object, used),
+        Expression::Index { object, index } => {
+            collect_used_idents_expr(object, used);
+            collect_used_idents_expr(index, used);
+        }
+        Expression::Array(elems) | Expression::Tuple(elems) => {
+            for e in elems { collect_used_idents_expr(e, used); }
+        }
+        Expression::Pipeline { left, right } => {
+            collect_used_idents_expr(left, used);
+            collect_used_idents_expr(right, used);
+        }
+        Expression::Struct { fields, .. } => {
+            for (_, e) in fields { collect_used_idents_expr(e, used); }
+        }
+        Expression::Lambda { body, .. } => collect_used_idents_expr(body, used),
+        Expression::LambdaBlock { body, .. } => {
+            for s in body { collect_used_idents_stmt(s, used); }
+        }
+        Expression::If { condition, then_expr, else_expr } => {
+            collect_used_idents_expr(condition, used);
+            collect_used_idents_expr(then_expr, used);
+            collect_used_idents_expr(else_expr, used);
+        }
+        Expression::Await(inner) => collect_used_idents_expr(inner, used),
+        _ => {}
+    }
+}
+
+fn check_empty_catch(stmt: &tryzub_parser::Statement, fn_name: &str, warnings: &mut Vec<String>) {
+    use tryzub_parser::Statement;
+    match stmt {
+        Statement::TryCatch { catch_body: None, .. } => {
+            warnings.push(format!("функція '{}': порожній catch блок", fn_name));
+        }
+        Statement::Block(stmts) => {
+            for s in stmts { check_empty_catch(s, fn_name, warnings); }
+        }
+        Statement::If { then_branch, else_branch, .. } => {
+            check_empty_catch(then_branch, fn_name, warnings);
+            if let Some(eb) = else_branch { check_empty_catch(eb, fn_name, warnings); }
+        }
+        _ => {}
+    }
 }
