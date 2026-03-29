@@ -3202,11 +3202,11 @@ impl VM {
                     }
                 }
             }
-            Type::Optional(_) => !matches!(value, Value::Null) || true,
+            Type::Optional(inner) => matches!(value, Value::Null) || self.check_type(value, inner).is_ok(),
             Type::Function(_, _) => matches!(value, Value::Function { .. } | Value::Lambda { .. } | Value::BuiltinFn(_)),
             _ => true,
         };
-        if ok || matches!(value, Value::Null) {
+        if ok {
             Ok(())
         } else {
             Err(anyhow::anyhow!(
@@ -3218,17 +3218,23 @@ impl VM {
         }
     }
 
-    fn type_to_ukrainian(ty: &tryzub_parser::Type) -> &'static str {
+    fn type_to_ukrainian(ty: &tryzub_parser::Type) -> String {
         use tryzub_parser::Type;
         match ty {
-            Type::Цл8 => "цл8", Type::Цл16 => "цл16", Type::Цл32 => "цл32", Type::Цл64 => "цл64",
-            Type::Чс8 => "чс8", Type::Чс16 => "чс16", Type::Чс32 => "чс32", Type::Чс64 => "чс64",
-            Type::Дрб32 => "дрб32", Type::Дрб64 => "дрб64",
-            Type::Лог => "лог", Type::Тхт => "тхт", Type::Сим => "сим",
-            Type::Slice(_) | Type::Array(_, _) => "масив",
-            Type::Tuple(_) => "кортеж",
-            Type::Function(_, _) => "функція",
-            _ => "тип",
+            Type::Цл8 => "цл8".to_string(), Type::Цл16 => "цл16".to_string(),
+            Type::Цл32 => "цл32".to_string(), Type::Цл64 => "цл64".to_string(),
+            Type::Чс8 => "чс8".to_string(), Type::Чс16 => "чс16".to_string(),
+            Type::Чс32 => "чс32".to_string(), Type::Чс64 => "чс64".to_string(),
+            Type::Дрб32 => "дрб32".to_string(), Type::Дрб64 => "дрб64".to_string(),
+            Type::Лог => "лог".to_string(), Type::Тхт => "тхт".to_string(), Type::Сим => "сим".to_string(),
+            Type::Slice(_) | Type::Array(_, _) => "масив".to_string(),
+            Type::Tuple(_) => "кортеж".to_string(),
+            Type::Function(_, _) => "функція".to_string(),
+            Type::Named(name) => name.clone(),
+            Type::SelfType => "себе".to_string(),
+            Type::Optional(inner) => format!("{}?", Self::type_to_ukrainian(inner)),
+            Type::Generic(name, _) => name.clone(),
+            _ => "тип".to_string(),
         }
     }
 
@@ -3236,7 +3242,7 @@ impl VM {
         match value {
             Value::Integer(n) => n.to_string(),
             Value::Float(f) => f.to_string(),
-            Value::String(s) if s.len() > 20 => format!("\"{}...\"", &s[..20]),
+            Value::String(s) if s.chars().count() > 20 => format!("\"{}...\"", s.chars().take(20).collect::<String>()),
             Value::String(s) => format!("\"{}\"", s),
             Value::Bool(b) => if *b { "істина".to_string() } else { "хиба".to_string() },
             Value::Array(a) => format!("[...] ({})", a.len()),

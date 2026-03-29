@@ -1,6 +1,6 @@
 [package]
 name = "tryzub-vm"
-version = "0.1.0"
+version = "6.9.1"
 edition = "2021"
 
 [lib]
