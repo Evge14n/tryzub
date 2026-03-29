@@ -1514,6 +1514,11 @@ impl Parser {
             return Ok(Expression::Await(Box::new(expr)));
         }
 
+        // Ключові слова які можуть бути функціями: потік(), все(), перегони()
+        if self.match_token(&TokenKind::Потік) {
+            return Ok(Expression::Identifier("потік".to_string()));
+        }
+
         // Літерали
         if let Some(lit) = self.match_literal() {
             return Ok(Expression::Literal(lit));

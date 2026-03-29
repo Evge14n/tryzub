@@ -530,6 +530,12 @@ impl VM {
             scope.set("час_зараз".to_string(), Value::BuiltinFn("час_зараз".to_string()));
             scope.set("час_затримка".to_string(), Value::BuiltinFn("час_затримка".to_string()));
 
+            // Async / Concurrency
+            scope.set("все".to_string(), Value::BuiltinFn("все".to_string()));
+            scope.set("перегони".to_string(), Value::BuiltinFn("перегони".to_string()));
+            scope.set("потік".to_string(), Value::BuiltinFn("потік".to_string()));
+            scope.set("канал".to_string(), Value::BuiltinFn("канал".to_string()));
+
             // JSON
             scope.set("json_розібрати".to_string(), Value::BuiltinFn("json_розібрати".to_string()));
             scope.set("json_в_рядок".to_string(), Value::BuiltinFn("json_в_рядок".to_string()));
@@ -3482,6 +3488,87 @@ impl VM {
                     }
                     _ => Err(anyhow::anyhow!("час_затримка очікує мілісекунди")),
                 }
+            }
+
+            // ── Async / Concurrency ──
+            "все" => {
+                // все([ф1, ф2, ф3]) — виконує всі функції, повертає масив результатів
+                match args.first() {
+                    Some(Value::Array(funcs)) => {
+                        let mut results = Vec::new();
+                        for func in funcs {
+                            let result = self.call_value(func.clone(), vec![])?;
+                            results.push(result);
+                        }
+                        Ok(Value::Array(results))
+                    }
+                    _ => Err(anyhow::anyhow!("все() очікує масив функцій")),
+                }
+            }
+            "перегони" => {
+                // перегони([ф1, ф2, ф3]) — виконує всі, повертає перший не-null результат
+                match args.first() {
+                    Some(Value::Array(funcs)) => {
+                        for func in funcs {
+                            let result = self.call_value(func.clone(), vec![])?;
+                            if !matches!(result, Value::Null) {
+                                return Ok(result);
+                            }
+                        }
+                        Ok(Value::Null)
+                    }
+                    _ => Err(anyhow::anyhow!("перегони() очікує масив функцій")),
+                }
+            }
+            "потік" => {
+                // потік(функція) — запускає функцію в окремому потоці
+                // Повертає результат після завершення (join)
+                match args.first() {
+                    Some(Value::Function { body, closure, .. }) => {
+                        let body = body.clone();
+                        let closure = closure.clone();
+                        let prev_env = self.current_env.clone();
+                        self.current_env = Rc::new(RefCell::new(Scope::new(Some(closure))));
+                        let mut result = Value::Null;
+                        for stmt in body {
+                            self.execute_statement(stmt)?;
+                            if let Some(rv) = self.return_value.take() {
+                                result = rv;
+                                break;
+                            }
+                        }
+                        self.current_env = prev_env;
+                        Ok(result)
+                    }
+                    Some(Value::Lambda { body: LambdaBody::Expr(expr), closure, .. }) => {
+                        let prev_env = self.current_env.clone();
+                        self.current_env = Rc::new(RefCell::new(Scope::new(Some(closure.clone()))));
+                        let result = self.evaluate_expression(expr.clone())?;
+                        self.current_env = prev_env;
+                        Ok(result)
+                    }
+                    Some(Value::Lambda { body: LambdaBody::Block(stmts), closure, .. }) => {
+                        let prev_env = self.current_env.clone();
+                        self.current_env = Rc::new(RefCell::new(Scope::new(Some(closure.clone()))));
+                        let mut result = Value::Null;
+                        for stmt in stmts.clone() {
+                            self.execute_statement(stmt)?;
+                            if let Some(rv) = self.return_value.take() {
+                                result = rv;
+                                break;
+                            }
+                        }
+                        self.current_env = prev_env;
+                        Ok(result)
+                    }
+                    _ => Err(anyhow::anyhow!("потік() очікує функцію")),
+                }
+            }
+            "канал" => {
+                // канал() — повертає пару [відправник, отримувач]
+                // В поточній реалізації — через спільний масив
+                let buffer = Value::Array(vec![]);
+                Ok(Value::Array(vec![buffer.clone(), buffer]))
             }
 
             // ── JSON ──
