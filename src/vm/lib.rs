@@ -629,7 +629,7 @@ impl VM {
             scope.set("Помилка".to_string(), Value::BuiltinFn("Помилка".to_string()));
 
             // Системне програмування
-            for name in &["зовнішня_бібліотека", "зовнішній_виклик",
+            for name in &["зовнішня_бібліотека", "зовнішній_виклик", "закрити_бібліотеку",
                 "виділити_пам'ять", "звільнити_пам'ять",
                 "записати_байт", "прочитати_байт", "записати_слово", "прочитати_слово",
                 "копіювати_пам'ять", "заповнити_пам'ять",
@@ -5421,8 +5421,8 @@ except Exception as e:
 
             // FFI: викликати C функцію
             "зовнішній_виклик" => {
-                if args.len() < 3 {
-                    return Err(anyhow::anyhow!("зовнішній_виклик(бібліотека, ім_я_функції, аргументи)"));
+                if args.len() < 2 {
+                    return Err(anyhow::anyhow!("зовнішній_виклик(бібліотека, функція, [аргументи...])"));
                 }
                 let lib_ptr = match &args[0] {
                     Value::Integer(p) => *p as usize,
@@ -5431,10 +5431,19 @@ except Exception as e:
                 let fn_name = args[1].to_display_string();
                 let lib = unsafe { &*(lib_ptr as *const libloading::Library) };
 
+                // Конвертуємо аргументи: String → *const u8, Float → f64 bits, Integer → i64
+                let mut c_strings: Vec<std::ffi::CString> = Vec::new();
                 let call_args: Vec<i64> = args[2..].iter().map(|v| match v {
                     Value::Integer(n) => *n,
-                    Value::Float(f) => *f as i64,
+                    Value::Float(f) => f.to_bits() as i64,
                     Value::Bool(b) => *b as i64,
+                    Value::String(s) => {
+                        let cs = std::ffi::CString::new(s.as_str()).unwrap_or_default();
+                        let ptr = cs.as_ptr() as i64;
+                        c_strings.push(cs);
+                        ptr
+                    }
+                    Value::Null => 0,
                     _ => 0,
                 }).collect();
 
@@ -5460,9 +5469,33 @@ except Exception as e:
                                 .map_err(|e| anyhow::anyhow!("Функція '{}' не знайдена: {}", fn_name, e))?;
                             Ok(Value::Integer(f(call_args[0], call_args[1], call_args[2])))
                         }
-                        _ => Err(anyhow::anyhow!("FFI підтримує до 3 аргументів"))
+                        4 => {
+                            let f: libloading::Symbol<unsafe extern "C" fn(i64, i64, i64, i64) -> i64> = lib.get(fn_name.as_bytes())
+                                .map_err(|e| anyhow::anyhow!("Функція '{}' не знайдена: {}", fn_name, e))?;
+                            Ok(Value::Integer(f(call_args[0], call_args[1], call_args[2], call_args[3])))
+                        }
+                        5 => {
+                            let f: libloading::Symbol<unsafe extern "C" fn(i64, i64, i64, i64, i64) -> i64> = lib.get(fn_name.as_bytes())
+                                .map_err(|e| anyhow::anyhow!("Функція '{}' не знайдена: {}", fn_name, e))?;
+                            Ok(Value::Integer(f(call_args[0], call_args[1], call_args[2], call_args[3], call_args[4])))
+                        }
+                        6 => {
+                            let f: libloading::Symbol<unsafe extern "C" fn(i64, i64, i64, i64, i64, i64) -> i64> = lib.get(fn_name.as_bytes())
+                                .map_err(|e| anyhow::anyhow!("Функція '{}' не знайдена: {}", fn_name, e))?;
+                            Ok(Value::Integer(f(call_args[0], call_args[1], call_args[2], call_args[3], call_args[4], call_args[5])))
+                        }
+                        _ => Err(anyhow::anyhow!("FFI підтримує до 6 аргументів"))
                     }
                 }
+            }
+
+            "закрити_бібліотеку" => {
+                let ptr = match args.first() {
+                    Some(Value::Integer(p)) => *p as usize,
+                    _ => return Err(anyhow::anyhow!("закрити_бібліотеку(вказівник)")),
+                };
+                unsafe { let _ = Box::from_raw(ptr as *mut libloading::Library); }
+                Ok(Value::Null)
             }
 
             // Пам'ять: виділити
@@ -6620,5 +6653,200 @@ mod tests {
         } else {
             panic!("випадкове має повернути Integer");
         }
+    }
+
+    // ── Тести системного програмування ──
+
+    fn run_tryzub(source: &str) -> Result<()> {
+        let tokens = tokenize(source).unwrap();
+        let program = parse(tokens).unwrap();
+        execute(program, vec![])
+    }
+
+    #[test]
+    fn test_memory_alloc_write_read_free() {
+        let r = run_tryzub(r#"
+функція головна() {
+    стала б = виділити_пам'ять(64)
+    записати_байт(б, 42)
+    стала значення = прочитати_байт(б)
+    перевірити (значення == 42)
+    записати_слово(б + 8, 1234567890)
+    стала с = прочитати_слово(б + 8)
+    перевірити (с == 1234567890)
+    звільнити_пам'ять(б)
+}
+"#);
+        assert!(r.is_ok(), "Memory alloc/write/read/free failed: {:?}", r.err());
+    }
+
+    #[test]
+    fn test_memory_bounds_check() {
+        let r = run_tryzub(r#"
+функція головна() {
+    стала б = виділити_пам'ять(16)
+    записати_байт(б + 100, 0)
+}
+"#);
+        assert!(r.is_err(), "Bounds check should reject out-of-range write");
+    }
+
+    #[test]
+    fn test_memory_memset_memcpy() {
+        let r = run_tryzub(r#"
+функція головна() {
+    стала а = виділити_пам'ять(64)
+    стала б = виділити_пам'ять(64)
+    заповнити_пам'ять(а, 0xAB, 16)
+    перевірити (прочитати_байт(а) == 0xAB)
+    перевірити (прочитати_байт(а + 15) == 0xAB)
+    копіювати_пам'ять(б, а, 16)
+    перевірити (прочитати_байт(б) == 0xAB)
+    звільнити_пам'ять(а)
+    звільнити_пам'ять(б)
+}
+"#);
+        assert!(r.is_ok(), "memset/memcpy failed: {:?}", r.err());
+    }
+
+    #[test]
+    fn test_memory_double_free() {
+        let r = run_tryzub(r#"
+функція головна() {
+    стала б = виділити_пам'ять(16)
+    звільнити_пам'ять(б)
+    звільнити_пам'ять(б)
+}
+"#);
+        assert!(r.is_err(), "Double free should return error");
+    }
+
+    #[test]
+    fn test_pointer_size() {
+        let mut vm = VM::new();
+        let result = vm.call_builtin("розмір_вказівника", vec![]).unwrap();
+        if let Value::Integer(n) = result {
+            assert_eq!(n, 8); // x86_64
+        } else {
+            panic!("Expected Integer");
+        }
+    }
+
+    #[test]
+    fn test_inline_asm_mov_ret() {
+        let r = run_tryzub(r#"
+функція головна() {
+    стала результат = asm_виконати("mov rax, 42\nret")
+    перевірити (результат == 42)
+}
+"#);
+        assert!(r.is_ok(), "Inline asm mov+ret failed: {:?}", r.err());
+    }
+
+    #[test]
+    fn test_inline_asm_arithmetic() {
+        let r = run_tryzub(r#"
+функція головна() {
+    стала результат = asm_виконати("mov rax, 100\nsub rax, 58\nret")
+    перевірити (результат == 42)
+}
+"#);
+        assert!(r.is_ok(), "Inline asm arithmetic failed: {:?}", r.err());
+    }
+
+    #[test]
+    fn test_inline_asm_bitwise() {
+        let r = run_tryzub(r#"
+функція головна() {
+    стала результат = asm_виконати("mov rax, 0xFF\nand rax, 0x0F\nret")
+    перевірити (результат == 15)
+}
+"#);
+        assert!(r.is_ok(), "Inline asm bitwise failed: {:?}", r.err());
+    }
+
+    #[test]
+    fn test_inline_asm_invalid() {
+        let r = run_tryzub(r#"
+функція головна() {
+    asm_виконати("невідома_інструкція rax")
+}
+"#);
+        assert!(r.is_err(), "Invalid asm should return error");
+    }
+
+    #[test]
+    fn test_ffi_load_library() {
+        let r = run_tryzub(r#"
+функція головна() {
+    стала л = зовнішня_бібліотека("msvcrt.dll")
+    перевірити (л > 0)
+}
+"#);
+        assert!(r.is_ok(), "FFI load library failed: {:?}", r.err());
+    }
+
+    #[test]
+    fn test_ffi_invalid_library() {
+        let r = run_tryzub(r#"
+функція головна() {
+    зовнішня_бібліотека("неіснуюча_бібліотека.dll")
+}
+"#);
+        assert!(r.is_err(), "FFI should fail for non-existent library");
+    }
+
+    #[test]
+    fn test_jit_arithmetic() {
+        // Тестуємо JIT компіляцію простої арифметики
+        let source = "функція головна() { стала а = 7\n стала б = 6\n друк(а * б) }";
+        let tokens = tokenize(source).unwrap();
+        let ast = parse(tokens).unwrap();
+        let compiler = crate::compiler::Compiler::new();
+        let chunk = compiler.compile_program(&ast);
+        // Перевірка що компіляція в bytecode працює
+        assert!(!chunk.code.is_empty(), "Bytecode chunk should not be empty");
+        // JIT компіляція
+        let jit_compiler = crate::jit::JitCompiler::new();
+        let jit_fn = jit_compiler.compile(&chunk);
+        // JIT execute працює без panic
+        let _ = jit_fn.execute();
+    }
+
+    #[test]
+    fn test_top_level_code() {
+        // Top-level wrapping happens in run_file, so we wrap manually
+        let source = "функція головна() { друк(42) }";
+        let tokens = tokenize(source).unwrap();
+        let ast = parse(tokens).unwrap();
+        assert!(execute(ast, vec![]).is_ok());
+    }
+
+    #[test]
+    fn test_optional_parens() {
+        let r = run_tryzub(r#"
+функція головна() {
+    якщо істина { друк("ok") }
+    для і в 1..4 { друк(і) }
+    змінна х = 3
+    поки х > 0 { х = х - 1 }
+    перевірити (х == 0)
+}
+"#);
+        assert!(r.is_ok(), "Optional parens failed: {:?}", r.err());
+    }
+
+    #[test]
+    fn test_default_params() {
+        let r = run_tryzub(r#"
+функція додати(а, б = 10) {
+    повернути а + б
+}
+функція головна() {
+    перевірити (додати(5) == 15)
+    перевірити (додати(5, 20) == 25)
+}
+"#);
+        assert!(r.is_ok(), "Default params failed: {:?}", r.err());
     }
 }
