@@ -471,6 +471,7 @@ fn run_tests(file: PathBuf) -> Result<()> {
                     .cloned()
                     .chain(std::iter::once(tryzub_parser::Declaration::Function {
                         name: "головна".to_string(),
+                        generic_params: vec![],
                         params: vec![],
                         return_type: None,
                         body: body.clone(),
@@ -505,6 +506,7 @@ fn run_tests(file: PathBuf) -> Result<()> {
                     .cloned()
                     .chain(std::iter::once(tryzub_parser::Declaration::Function {
                         name: "головна".to_string(),
+                        generic_params: vec![],
                         params: vec![], return_type: None,
                         body: body.clone(), is_async: false,
                         visibility: tryzub_parser::Visibility::Public,
@@ -536,6 +538,7 @@ fn run_tests(file: PathBuf) -> Result<()> {
                     .cloned()
                     .chain(std::iter::once(tryzub_parser::Declaration::Function {
                         name: "головна".to_string(),
+                        generic_params: vec![],
                         params: vec![], return_type: None,
                         body: body.clone(), is_async: false,
                         visibility: tryzub_parser::Visibility::Public,

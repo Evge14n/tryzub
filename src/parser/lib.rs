@@ -23,6 +23,7 @@ pub enum Declaration {
     },
     Function {
         name: String,
+        generic_params: Vec<String>,
         params: Vec<Parameter>,
         return_type: Option<Type>,
         body: Vec<Statement>,
@@ -32,8 +33,9 @@ pub enum Declaration {
     },
     Struct {
         name: String,
+        generic_params: Vec<String>,
         fields: Vec<Field>,
-        methods: Vec<Declaration>, // Методи через реалізація
+        methods: Vec<Declaration>,
         visibility: Visibility,
     },
     /// Алгебраїчний тип (enum / sum type)
@@ -578,6 +580,8 @@ impl Parser {
     fn function_declaration(&mut self, is_async: bool, visibility: Visibility) -> Result<Declaration> {
         let name = self.consume_identifier("Очікувалось ім'я функції")?;
 
+        let generic_params = self.parse_generic_params()?;
+
         self.consume(&TokenKind::ЛіваДужка, "Очікувалась '(' після імені функції")?;
 
         let mut params = Vec::new();
@@ -671,6 +675,7 @@ impl Parser {
 
         Ok(Declaration::Function {
             name,
+            generic_params,
             params,
             return_type,
             body,
@@ -682,6 +687,8 @@ impl Parser {
 
     fn struct_declaration(&mut self, visibility: Visibility) -> Result<Declaration> {
         let name = self.consume_identifier("Очікувалось ім'я структури")?;
+
+        let generic_params = self.parse_generic_params()?;
 
         self.consume(&TokenKind::ЛіваФігурна, "Очікувалась '{'")?;
 
@@ -710,7 +717,7 @@ impl Parser {
 
         self.consume(&TokenKind::ПраваФігурна, "Очікувалась '}'")?;
 
-        Ok(Declaration::Struct { name, fields, methods: Vec::new(), visibility })
+        Ok(Declaration::Struct { name, generic_params, fields, methods: Vec::new(), visibility })
     }
 
     /// тип Назва<Т> { Варіант1(поля), Варіант2 }

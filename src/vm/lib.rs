@@ -119,6 +119,7 @@ pub enum Value {
     },
     Function {
         name: Option<String>,
+        generic_params: Vec<String>,
         params: Vec<Parameter>,
         body: Vec<Statement>,
         closure: Environment,
@@ -759,9 +760,10 @@ impl VM {
                 };
                 self.current_env.borrow_mut().set(name, val);
             }
-            Declaration::Function { name, params, body, contract, .. } => {
+            Declaration::Function { name, generic_params, params, body, contract, .. } => {
                 let func = Value::Function {
                     name: Some(name.clone()),
+                    generic_params,
                     params,
                     body,
                     closure: self.current_env.clone(),
@@ -798,9 +800,10 @@ impl VM {
             Declaration::TraitImpl { for_type, methods, .. } |
             Declaration::Impl { type_name: for_type, methods } => {
                 for method in methods {
-                    if let Declaration::Function { name, params, body, .. } = method {
+                    if let Declaration::Function { name, generic_params, params, body, .. } = method {
                         let func = Value::Function {
                             name: Some(name.clone()),
+                            generic_params,
                             params,
                             body: body.clone(),
                             closure: self.current_env.clone(),
@@ -1373,7 +1376,7 @@ impl VM {
 
     fn call_value(&mut self, func: Value, args: Vec<Value>) -> Result<Value> {
         match func {
-            Value::Function { params, body, closure, name } => {
+            Value::Function { params, body, closure, name, .. } => {
                 let func_name = name.clone().unwrap_or_default();
 
                 // Кеш чистих функцій — якщо функція позначена як чиста,
