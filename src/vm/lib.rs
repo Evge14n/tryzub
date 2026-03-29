@@ -365,7 +365,14 @@ pub struct VM {
     /// Відстеження виділеної пам'яті (адреса → layout)
     allocations: HashMap<usize, std::alloc::Layout>,
     /// Call stack для stack traces
-    call_stack: Vec<String>,
+    call_stack: Vec<CallFrame>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CallFrame {
+    pub function_name: String,
+    pub file: String,
+    pub line: usize,
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1070,10 +1077,10 @@ impl VM {
                         let known = self.current_env.borrow().all_names();
                         let suggestion = Self::find_similar(&name, &known);
                         let hint = if let Some(s) = suggestion {
-                            format!(". Можливо ви мали на увазі '{}'?", s)
+                            format!("\n  Підказка: можливо ви мали на увазі '{}'?", s)
                         } else { String::new() };
                         let trace = self.format_stack_trace();
-                        anyhow::anyhow!("Невідома змінна або функція: '{}'{}\n{}", name, hint, trace)
+                        anyhow::anyhow!("[Т001] Невідома змінна або функція: '{}'{}\n{}", name, hint, trace)
                     })
             }
             Expression::SelfRef => {
@@ -1302,7 +1309,11 @@ impl VM {
                     }
                 }
 
-                self.call_stack.push(func_name.clone());
+                self.call_stack.push(CallFrame {
+                    function_name: func_name.clone(),
+                    file: String::new(),
+                    line: 0,
+                });
                 let prev_env = self.current_env.clone();
                 self.current_env = Rc::new(RefCell::new(Scope::new(Some(closure))));
 
@@ -2900,8 +2911,12 @@ impl VM {
     fn format_stack_trace(&self) -> String {
         if self.call_stack.is_empty() { return String::new(); }
         let mut trace = String::from("  Стек викликів:\n");
-        for (i, name) in self.call_stack.iter().rev().enumerate() {
-            trace.push_str(&format!("    {}. {}()\n", i, name));
+        for (i, frame) in self.call_stack.iter().rev().enumerate() {
+            if frame.file.is_empty() {
+                trace.push_str(&format!("    {}. {}()\n", i, frame.function_name));
+            } else {
+                trace.push_str(&format!("    {}. {}() в {}:{}\n", i, frame.function_name, frame.file, frame.line));
+            }
         }
         trace
     }
