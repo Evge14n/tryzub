@@ -1,4 +1,4 @@
-// Мова програмування Тризуб v4.5
+// Мова програмування Тризуб v8.3.0
 // Автор: *******
 // Copyright (c) 2025 *******. Всі права захищені.
 // Ліцензія: MIT
@@ -254,7 +254,7 @@ fn main() {
         }
         Commands::Profile { file } => profile_file(file),
         Commands::Version => {
-            println!("Тризуб v5.9.0");
+            println!("Тризуб v8.3.0");
             println!("Ліцензія: MIT");
             println!("https://github.com/Evge14n/tryzub");
             Ok(())
@@ -633,7 +633,7 @@ fn run_repl() -> Result<()> {
     let mut rl = rustyline::DefaultEditor::new()?;
     let _ = rl.load_history(&history_path);
 
-    println!("\x1b[36mТризуб v7.8.0\x1b[0m — Інтерактивний режим");
+    println!("\x1b[36mТризуб v8.3.0\x1b[0m — Інтерактивний режим");
     println!("Введіть :допомога для списку команд");
     println!();
 
@@ -827,7 +827,7 @@ fn create_project(name: String) -> Result<()> {
     fs::create_dir(format!("{}/src", name))?;
 
     let main_content = format!(r#"// Проект: {}
-// Створено за допомогою мови Тризуб v5.9.0
+// Створено за допомогою мови Тризуб v8.3.0
 
 функція головна() {{
     друк("Привіт з проекту {}! ")
