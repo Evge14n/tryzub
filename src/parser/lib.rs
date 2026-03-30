@@ -1539,6 +1539,23 @@ impl Parser {
             return Ok(Expression::SelfRef);
         }
 
+        // Лямбда без параметрів: || вираз або || { блок }
+        if self.check(&TokenKind::Або) {
+            self.advance();
+            if self.check(&TokenKind::ЛіваФігурна) {
+                self.consume(&TokenKind::ЛіваФігурна, "Очікувалась '{'")?;
+                let mut body = Vec::new();
+                while !self.check(&TokenKind::ПраваФігурна) && !self.is_at_end() {
+                    body.push(self.statement()?);
+                }
+                self.consume(&TokenKind::ПраваФігурна, "Очікувалась '}'")?;
+                return Ok(Expression::LambdaBlock { params: vec![], body });
+            } else {
+                let body = self.expression()?;
+                return Ok(Expression::Lambda { params: vec![], body: Box::new(body) });
+            }
+        }
+
         // Лямбда: |параметри| вираз
         if self.check(&TokenKind::Вертикальна) {
             return self.parse_lambda();
