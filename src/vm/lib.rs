@@ -1241,9 +1241,10 @@ impl VM {
 
     // ── Обчислення виразів ──
 
+    #[inline(always)]
     fn evaluate_expression(&mut self, expr: Expression) -> Result<Value> {
         self.op_count += 1;
-        if self.op_count % self.gc_threshold == 0 {
+        if self.op_count & 0xFFFF == 0 {
             self.run_gc();
         }
         match expr {
@@ -1267,6 +1268,22 @@ impl VM {
             Expression::Binary { left, op, right } => {
                 let lhs = self.evaluate_expression(*left)?;
                 let rhs = self.evaluate_expression(*right)?;
+                if let (Value::Integer(a), Value::Integer(b)) = (&lhs, &rhs) {
+                    match op {
+                        BinaryOp::Add => return Ok(Value::Integer(a + b)),
+                        BinaryOp::Sub => return Ok(Value::Integer(a - b)),
+                        BinaryOp::Mul => return Ok(Value::Integer(a * b)),
+                        BinaryOp::Div => return if *b != 0 { Ok(Value::Integer(a / b)) } else { Err(anyhow::anyhow!("Ділення на нуль")) },
+                        BinaryOp::Mod => return if *b != 0 { Ok(Value::Integer(a % b)) } else { Err(anyhow::anyhow!("Ділення на нуль")) },
+                        BinaryOp::Lt => return Ok(Value::Bool(a < b)),
+                        BinaryOp::Le => return Ok(Value::Bool(a <= b)),
+                        BinaryOp::Gt => return Ok(Value::Bool(a > b)),
+                        BinaryOp::Ge => return Ok(Value::Bool(a >= b)),
+                        BinaryOp::Eq => return Ok(Value::Bool(a == b)),
+                        BinaryOp::Ne => return Ok(Value::Bool(a != b)),
+                        _ => {}
+                    }
+                }
                 match self.apply_binary_op(op.clone(), lhs.clone(), rhs.clone()) {
                     Ok(result) => Ok(result),
                     Err(_) => {
