@@ -499,6 +499,38 @@ impl Lexer {
     }
 
     fn scan_string(&mut self, start_column: usize) -> Result<Option<Token>> {
+        // Multi-line string: """..."""
+        if self.peek() == '"' && self.peek_next() == '"' {
+            self.advance(); // skip 2nd "
+            self.advance(); // skip 3rd "
+            let mut value = String::new();
+            loop {
+                if self.is_at_end() {
+                    return Err(anyhow::anyhow!("Незакритий багаторядковий рядок на рядку {}", self.line));
+                }
+                if self.peek() == '"' && self.peek_next() == '"' {
+                    let saved = self.current;
+                    self.advance();
+                    if self.peek() == '"' {
+                        self.advance(); // skip 3rd closing "
+                        break;
+                    }
+                    self.current = saved;
+                }
+                if self.peek() == '\n' { self.line += 1; self.column = 0; }
+                value.push(self.advance());
+            }
+            // Strip leading newline and common indentation
+            let trimmed = if value.starts_with('\n') { &value[1..] } else { &value[..] };
+            let result = trimmed.to_string();
+            return Ok(Some(Token {
+                kind: TokenKind::Рядок(result.clone()),
+                lexeme: result,
+                line: self.line,
+                column: start_column,
+            }));
+        }
+
         let mut value = String::new();
 
         while self.peek() != '"' && !self.is_at_end() {
