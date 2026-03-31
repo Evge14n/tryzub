@@ -437,25 +437,48 @@ fn watch_file(file: PathBuf) -> Result<()> {
     use notify::{Watcher, RecursiveMode};
     use std::sync::mpsc;
 
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::channel::<Vec<std::path::PathBuf>>();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Ok(event) = res {
             if event.kind.is_modify() {
-                let _ = tx.send(());
+                let tryzub_paths: Vec<std::path::PathBuf> = event.paths.iter()
+                    .filter(|p| p.extension().map_or(false, |e| e == "тризуб" || e == "tryzub"))
+                    .cloned()
+                    .collect();
+                if !tryzub_paths.is_empty() {
+                    let _ = tx.send(tryzub_paths);
+                }
             }
         }
     })?;
 
-    let watch_dir = file.parent().unwrap_or(std::path::Path::new("."));
-    watcher.watch(watch_dir, RecursiveMode::Recursive)?;
+    let watch_path = if file.is_dir() {
+        watcher.watch(&file, RecursiveMode::Recursive)?;
+        file.clone()
+    } else {
+        let watch_dir = file.parent().unwrap_or(std::path::Path::new("."));
+        watcher.watch(watch_dir, RecursiveMode::Recursive)?;
+        file.clone()
+    };
 
-    println!("\x1b[36m👁 Спостерігаю за {:?}\x1b[0m", file);
+    println!("\x1b[36m👁 Спостерігаю за {:?}\x1b[0m", watch_path);
     println!("   Зміни автоматично перезапустять програму\n");
+
+    let run_target = if file.is_dir() {
+        let mut main_file = file.join("головна.тризуб");
+        if !main_file.exists() { main_file = file.join("main.tryzub"); }
+        if !main_file.exists() {
+            return Err(anyhow::anyhow!("Не знайдено головна.тризуб у директорії {:?}", file));
+        }
+        main_file
+    } else {
+        file.clone()
+    };
 
     loop {
         println!("\x1b[33m▶ Запуск...\x1b[0m");
         let start = std::time::Instant::now();
-        match run_file(file.clone(), false, false, vec![]) {
+        match run_file(run_target.clone(), false, false, vec![]) {
             Ok(_) => {
                 let elapsed = start.elapsed();
                 println!("\x1b[32m✓ Виконано за {:.1}мс\x1b[0m", elapsed.as_secs_f64() * 1000.0);
@@ -466,15 +489,21 @@ fn watch_file(file: PathBuf) -> Result<()> {
         }
         println!("\x1b[36m  Чекаю на зміни...\x1b[0m\n");
 
-        // Drain any pending events
         while rx.try_recv().is_ok() {}
-        // Wait for next change
-        let _ = rx.recv();
+        let changed = rx.recv().unwrap_or_default();
         std::thread::sleep(std::time::Duration::from_millis(300));
         while rx.try_recv().is_ok() {}
 
         print!("\x1b[2J\x1b[H");
-        println!("\x1b[33m🔄 Змінено: {} → перезапуск\x1b[0m\n", file.file_name().unwrap_or_default().to_string_lossy());
+        let changed_names: Vec<String> = changed.iter()
+            .map(|p| p.file_name().unwrap_or_default().to_string_lossy().to_string())
+            .collect();
+        let display = if changed_names.is_empty() {
+            run_target.file_name().unwrap_or_default().to_string_lossy().to_string()
+        } else {
+            changed_names.join(", ")
+        };
+        println!("\x1b[33m🔄 Змінено: {} → перезапуск\x1b[0m\n", display);
     }
 }
 
