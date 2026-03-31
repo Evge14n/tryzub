@@ -1715,37 +1715,23 @@ fn run_doc(path: PathBuf, output: PathBuf) -> Result<()> {
     let files: Vec<PathBuf> = if path.is_file() {
         vec![path]
     } else {
-        fs::read_dir(&path)?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| {
-                p.extension().map_or(false, |ext| {
-                    ext == "тризуб" || ext == "tryzub"
-                })
-            })
-            .collect()
+        let mut f: Vec<PathBuf> = fs::read_dir(&path)?
+            .filter_map(|e| e.ok()).map(|e| e.path())
+            .filter(|p| p.extension().map_or(false, |ext| ext == "тризуб" || ext == "tryzub"))
+            .collect();
+        f.sort();
+        f
     };
 
-    let mut html = String::from(r#"<!DOCTYPE html>
-<html lang="uk"><head><meta charset="UTF-8">
-<title>Тризуб — Документація</title>
-<style>
-body { font-family: -apple-system, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 20px; line-height: 1.6; color: #333; }
-h1 { color: #0057b7; border-bottom: 3px solid #ffd700; padding-bottom: 10px; }
-h2 { color: #0057b7; margin-top: 30px; }
-h3 { color: #444; }
-code { background: #f5f5f5; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
-pre { background: #f5f5f5; padding: 15px; border-radius: 5px; overflow-x: auto; }
-.doc { color: #666; font-style: italic; margin-bottom: 5px; }
-.sig { font-weight: bold; font-family: monospace; font-size: 1.1em; }
-</style></head><body>
-<h1>Тризуб — Документація</h1>
-"#);
+    let mut nav = String::new();
+    let mut content = String::new();
 
     for file in &files {
         let source = fs::read_to_string(file)?;
-        let filename = file.file_name().unwrap_or_default().to_string_lossy();
-        html.push_str(&format!("<h2>{}</h2>\n", filename));
+        let filename = file.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let module_id = filename.replace('.', "_");
+        nav.push_str(&format!("<li><a href='#{}'>{}</a></li>\n", module_id, filename));
+        content.push_str(&format!("<h2 id='{}'>{}</h2>\n", module_id, filename));
 
         let mut doc_comments: Vec<String> = Vec::new();
         for line in source.lines() {
@@ -1755,16 +1741,36 @@ pre { background: #f5f5f5; padding: 15px; border-radius: 5px; overflow-x: auto; 
             } else if trimmed.starts_with("функція ") || trimmed.starts_with("публічний функція ") {
                 let sig = trimmed.split('{').next().unwrap_or(trimmed).trim();
                 if !doc_comments.is_empty() {
-                    html.push_str(&format!("<div class='doc'>{}</div>\n", doc_comments.join("<br>")));
+                    let doc_html = doc_comments.join("<br>")
+                        .replace("**", "<strong>").replace("*", "<em>")
+                        .replace("`", "<code>");
+                    content.push_str(&format!("<div class='item'><div class='doc'>{}</div>\n", doc_html));
+                } else {
+                    content.push_str("<div class='item'>\n");
                 }
-                html.push_str(&format!("<div class='sig'><code>{}</code></div>\n<br>\n", sig));
+                content.push_str(&format!("<code class='sig'>{}</code></div>\n", sig));
                 doc_comments.clear();
             } else if trimmed.starts_with("структура ") {
                 let sig = trimmed.split('{').next().unwrap_or(trimmed).trim();
                 if !doc_comments.is_empty() {
-                    html.push_str(&format!("<div class='doc'>{}</div>\n", doc_comments.join("<br>")));
+                    content.push_str(&format!("<div class='item'><div class='doc'>{}</div>\n", doc_comments.join("<br>")));
+                } else {
+                    content.push_str("<div class='item'>\n");
                 }
-                html.push_str(&format!("<div class='sig'><code>{}</code></div>\n<br>\n", sig));
+                content.push_str(&format!("<code class='sig'>{}</code></div>\n", sig));
+                doc_comments.clear();
+            } else if trimmed.starts_with("трейт ") {
+                let sig = trimmed.split('{').next().unwrap_or(trimmed).trim();
+                if !doc_comments.is_empty() {
+                    content.push_str(&format!("<div class='item trait'><div class='doc'>{}</div>\n", doc_comments.join("<br>")));
+                } else {
+                    content.push_str("<div class='item trait'>\n");
+                }
+                content.push_str(&format!("<code class='sig'>{}</code></div>\n", sig));
+                doc_comments.clear();
+            } else if trimmed.starts_with("модуль ") {
+                let sig = trimmed.split('{').next().unwrap_or(trimmed).trim();
+                content.push_str(&format!("<h3>{}</h3>\n", sig));
                 doc_comments.clear();
             } else if !trimmed.starts_with("//") {
                 doc_comments.clear();
@@ -1772,7 +1778,45 @@ pre { background: #f5f5f5; padding: 15px; border-radius: 5px; overflow-x: auto; 
         }
     }
 
-    html.push_str("</body></html>");
+    let html = format!(r#"<!DOCTYPE html>
+<html lang="uk"><head><meta charset="UTF-8">
+<title>Тризуб — Документація</title>
+<style>
+* {{ margin: 0; padding: 0; box-sizing: border-box; }}
+body {{ font-family: -apple-system, sans-serif; display: flex; min-height: 100vh; color: #333; }}
+nav {{ width: 250px; background: #f8f9fa; border-right: 1px solid #dee2e6; padding: 20px; position: fixed; height: 100vh; overflow-y: auto; }}
+nav h3 {{ color: #0057b7; margin-bottom: 15px; font-size: 1.1em; }}
+nav ul {{ list-style: none; }}
+nav li {{ margin: 4px 0; }}
+nav a {{ color: #495057; text-decoration: none; font-size: 0.9em; }}
+nav a:hover {{ color: #0057b7; }}
+main {{ margin-left: 250px; padding: 30px 40px; max-width: 800px; line-height: 1.7; }}
+h1 {{ color: #0057b7; border-bottom: 3px solid #ffd700; padding-bottom: 10px; margin-bottom: 20px; }}
+h2 {{ color: #0057b7; margin-top: 30px; padding-top: 15px; border-top: 1px solid #eee; }}
+h3 {{ color: #6c757d; margin-top: 15px; font-size: 1em; }}
+.item {{ margin: 8px 0; padding: 10px; border-left: 3px solid #0057b7; background: #f8f9fa; border-radius: 0 4px 4px 0; }}
+.item.trait {{ border-left-color: #ffd700; }}
+.doc {{ color: #6c757d; font-size: 0.9em; margin-bottom: 4px; }}
+.sig {{ font-family: 'Cascadia Code', monospace; font-size: 0.95em; color: #212529; }}
+#search {{ width: 100%; padding: 6px 10px; border: 1px solid #ced4da; border-radius: 4px; margin-bottom: 15px; }}
+</style></head><body>
+<nav>
+<h3>Тризуб Документація</h3>
+<input type="text" id="search" placeholder="Пошук..." oninput="filterDocs(this.value)">
+<ul>{}</ul>
+</nav>
+<main>
+<h1>Тризуб — Документація API</h1>
+{}
+</main>
+<script>
+function filterDocs(q) {{
+  document.querySelectorAll('.item').forEach(el => {{
+    el.style.display = el.textContent.toLowerCase().includes(q.toLowerCase()) ? '' : 'none';
+  }});
+}}
+</script>
+</body></html>"#, nav, content);
 
     let out_file = output.join("index.html");
     fs::write(&out_file, html)?;
