@@ -1234,6 +1234,40 @@ impl VM {
                     }
                 }
             }
+            Expression::Index { object, index } => {
+                if let Expression::Identifier(obj_name) = *object {
+                    let idx = self.evaluate_expression(*index)?;
+                    let new_value = self.evaluate_expression(value)?;
+                    let obj = self.current_env.borrow().get(&obj_name)
+                        .ok_or_else(|| anyhow::anyhow!("Невідома змінна: {}", obj_name))?;
+                    match obj {
+                        Value::Array(mut arr) => {
+                            if let Value::Integer(i) = idx {
+                                let idx = if i < 0 { arr.len() as i64 + i } else { i } as usize;
+                                if idx < arr.len() {
+                                    arr[idx] = new_value;
+                                    self.current_env.borrow_mut().update(&obj_name, Value::Array(arr))?;
+                                }
+                            }
+                        }
+                        Value::Dict(mut pairs) => {
+                            let mut found = false;
+                            for (k, v) in pairs.iter_mut() {
+                                if self.values_equal(k, &idx) {
+                                    *v = new_value.clone();
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if !found {
+                                pairs.push((idx, new_value));
+                            }
+                            self.current_env.borrow_mut().update(&obj_name, Value::Dict(pairs))?;
+                        }
+                        _ => return Err(anyhow::anyhow!("Індексне присвоєння підтримується тільки для масивів та словників")),
+                    }
+                }
+            }
             _ => return Err(anyhow::anyhow!("Присвоєння можливе тільки до змінних")),
         }
         Ok(())
