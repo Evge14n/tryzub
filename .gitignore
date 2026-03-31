@@ -62,3 +62,4 @@ Thumbs.db
 # Examples build
 /examples/build/
 /examples/*/target/
+.claude/
