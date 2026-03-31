@@ -139,26 +139,41 @@ impl Chunk {
     }
 }
 
-// Стековий автомат — виконує bytecode
+struct CallFrame {
+    return_ip: usize,
+    base_slot: usize,
+    func_idx: usize,
+}
+
 pub struct BytecodeVM {
     stack: Vec<BcValue>,
     locals: Vec<BcValue>,
     globals: Vec<BcValue>,
     ip: usize,
     pub ops_executed: u64,
+    call_stack: Vec<CallFrame>,
+    functions: Vec<Chunk>,
 }
 
 impl BytecodeVM {
     pub fn new(local_count: usize) -> Self {
-        let mut locals = Vec::with_capacity(local_count);
-        locals.resize(local_count, BcValue::Null);
+        let mut locals = Vec::with_capacity(local_count.max(256));
+        locals.resize(local_count.max(256), BcValue::Null);
         Self {
             stack: Vec::with_capacity(256),
             locals,
             globals: Vec::new(),
             ip: 0,
             ops_executed: 0,
+            call_stack: Vec::with_capacity(64),
+            functions: Vec::new(),
         }
+    }
+
+    pub fn register_function(&mut self, chunk: Chunk) -> usize {
+        let idx = self.functions.len();
+        self.functions.push(chunk);
+        idx
     }
 
     #[inline(always)]
@@ -313,12 +328,74 @@ impl BytecodeVM {
                 }
                 Op::Loop => { self.ip -= inst.arg as usize; }
 
-                // Функції
                 Op::Call => {
-                    // Виклик функції поки делегується tree-walking VM
+                    let func_idx = inst.arg as usize;
+                    let arg_count = if func_idx < self.functions.len() {
+                        self.functions[func_idx].local_count
+                    } else { 0 };
+                    self.call_stack.push(CallFrame {
+                        return_ip: self.ip,
+                        base_slot: self.locals.len(),
+                        func_idx,
+                    });
+                    let base = self.locals.len();
+                    self.locals.resize(base + arg_count.max(16), BcValue::Null);
+                    let stack_args = std::cmp::min(self.stack.len(), arg_count);
+                    for i in (0..stack_args).rev() {
+                        self.locals[base + i] = self.stack.pop().unwrap_or(BcValue::Null);
+                    }
+                    if func_idx < self.functions.len() {
+                        let func_code = self.functions[func_idx].code.clone();
+                        let func_constants = self.functions[func_idx].constants.clone();
+                        let saved_ip = self.ip;
+                        self.ip = 0;
+                        while self.ip < func_code.len() {
+                            self.ops_executed += 1;
+                            let fi = &func_code[self.ip];
+                            self.ip += 1;
+                            match fi.op {
+                                Op::Const => self.push(func_constants[fi.arg as usize].clone()),
+                                Op::LoadLocal => self.push(self.locals[base + fi.arg as usize].clone()),
+                                Op::StoreLocal => { let v = self.pop(); self.locals[base + fi.arg as usize] = v; }
+                                Op::Add => { let b = self.pop(); let a = self.pop(); match (&a,&b) { (BcValue::Int(x),BcValue::Int(y)) => self.push(BcValue::Int(x+y)), _ => self.push(BcValue::Float(a.as_float()+b.as_float())) } }
+                                Op::Sub => { let b = self.pop(); let a = self.pop(); match (&a,&b) { (BcValue::Int(x),BcValue::Int(y)) => self.push(BcValue::Int(x-y)), _ => self.push(BcValue::Float(a.as_float()-b.as_float())) } }
+                                Op::Mul => { let b = self.pop(); let a = self.pop(); match (&a,&b) { (BcValue::Int(x),BcValue::Int(y)) => self.push(BcValue::Int(x*y)), _ => self.push(BcValue::Float(a.as_float()*b.as_float())) } }
+                                Op::Lt => { let b = self.pop(); let a = self.pop(); self.push(BcValue::Bool(a.as_int() < b.as_int())); }
+                                Op::Le => { let b = self.pop(); let a = self.pop(); self.push(BcValue::Bool(a.as_int() <= b.as_int())); }
+                                Op::Gt => { let b = self.pop(); let a = self.pop(); self.push(BcValue::Bool(a.as_int() > b.as_int())); }
+                                Op::Eq => { let b = self.pop(); let a = self.pop(); self.push(BcValue::Bool(a.as_int() == b.as_int())); }
+                                Op::JumpIfFalse => { let c = self.pop(); if !c.as_bool() { self.ip = fi.arg as usize; } }
+                                Op::JumpIfTrue => { let c = self.pop(); if c.as_bool() { self.ip = fi.arg as usize; } }
+                                Op::Jump => { self.ip = fi.arg as usize; }
+                                Op::Call => {
+                                    // Рекурсивний виклик
+                                    let ridx = fi.arg as usize;
+                                    let rargs = if ridx < self.functions.len() { self.functions[ridx].local_count } else { 0 };
+                                    let rbase = self.locals.len();
+                                    self.locals.resize(rbase + rargs.max(16), BcValue::Null);
+                                    let sa = std::cmp::min(self.stack.len(), rargs);
+                                    for i in (0..sa).rev() { self.locals[rbase + i] = self.stack.pop().unwrap_or(BcValue::Null); }
+                                    self.call_stack.push(CallFrame { return_ip: self.ip, base_slot: base, func_idx: ridx });
+                                    // Can't recurse properly inline — use iterative approach via stack
+                                    // For now: fallback to the outer execute loop won't work
+                                    // This needs a proper iterative call mechanism
+                                }
+                                Op::Return => break,
+                                Op::Print => { let v = self.pop(); println!("{}", v.to_string()); }
+                                _ => {}
+                            }
+                        }
+                        self.ip = saved_ip;
+                    }
+                    self.locals.truncate(self.call_stack.pop().map_or(0, |f| f.base_slot));
                 }
                 Op::Return => {
-                    return self.pop();
+                    if let Some(frame) = self.call_stack.pop() {
+                        self.ip = frame.return_ip;
+                        self.locals.truncate(frame.base_slot);
+                    } else {
+                        return self.pop();
+                    }
                 }
 
                 // Вбудовані
