@@ -1962,94 +1962,108 @@ fn run_doc(path: PathBuf, output: PathBuf) -> Result<()> {
 
     let mut nav = String::new();
     let mut content = String::new();
+    let mut all_items: Vec<String> = Vec::new();
 
     for file in &files {
         let source = fs::read_to_string(file)?;
         let filename = file.file_name().unwrap_or_default().to_string_lossy().to_string();
         let module_id = filename.replace('.', "_");
-        nav.push_str(&format!("<li><a href='#{}'>{}</a></li>\n", module_id, filename));
-        content.push_str(&format!("<h2 id='{}'>{}</h2>\n", module_id, filename));
+        nav.push_str(&format!("<li class='nav-module'><a href='#{}'>{}</a><ul>\n", module_id, filename));
+        content.push_str(&format!("<h2 id='{}' class='module-header'>{}</h2>\n", module_id, filename));
 
-        let mut doc_comments: Vec<String> = Vec::new();
-        for line in source.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("///") {
-                doc_comments.push(trimmed[3..].trim().to_string());
-            } else if trimmed.starts_with("функція ") || trimmed.starts_with("публічний функція ") {
-                let sig = trimmed.split('{').next().unwrap_or(trimmed).trim();
-                if !doc_comments.is_empty() {
-                    let doc_html = doc_comments.join("<br>")
-                        .replace("**", "<strong>").replace("*", "<em>")
-                        .replace("`", "<code>");
-                    content.push_str(&format!("<div class='item'><div class='doc'>{}</div>\n", doc_html));
-                } else {
-                    content.push_str("<div class='item'>\n");
-                }
-                content.push_str(&format!("<code class='sig'>{}</code></div>\n", sig));
-                doc_comments.clear();
-            } else if trimmed.starts_with("структура ") {
-                let sig = trimmed.split('{').next().unwrap_or(trimmed).trim();
-                if !doc_comments.is_empty() {
-                    content.push_str(&format!("<div class='item'><div class='doc'>{}</div>\n", doc_comments.join("<br>")));
-                } else {
-                    content.push_str("<div class='item'>\n");
-                }
-                content.push_str(&format!("<code class='sig'>{}</code></div>\n", sig));
-                doc_comments.clear();
-            } else if trimmed.starts_with("трейт ") {
-                let sig = trimmed.split('{').next().unwrap_or(trimmed).trim();
-                if !doc_comments.is_empty() {
-                    content.push_str(&format!("<div class='item trait'><div class='doc'>{}</div>\n", doc_comments.join("<br>")));
-                } else {
-                    content.push_str("<div class='item trait'>\n");
-                }
-                content.push_str(&format!("<code class='sig'>{}</code></div>\n", sig));
-                doc_comments.clear();
-            } else if trimmed.starts_with("модуль ") {
-                let sig = trimmed.split('{').next().unwrap_or(trimmed).trim();
-                content.push_str(&format!("<h3>{}</h3>\n", sig));
-                doc_comments.clear();
-            } else if !trimmed.starts_with("//") {
-                doc_comments.clear();
+        if let Ok(tokens) = tryzub_lexer::tokenize(&source) {
+            if let Ok(program) = tryzub_parser::parse(tokens) {
+                doc_generate_decls(&program.declarations, &module_id, &mut nav, &mut content, &mut all_items, &source);
             }
         }
+
+        if nav.ends_with("<ul>\n") {
+            let mut doc_comments: Vec<String> = Vec::new();
+            for line in source.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("///") {
+                    doc_comments.push(trimmed[3..].trim().to_string());
+                } else if trimmed.starts_with("функція ") || trimmed.starts_with("публічний функція ") {
+                    let sig = trimmed.split('{').next().unwrap_or(trimmed).trim();
+                    let doc_html = if !doc_comments.is_empty() {
+                        format!("<div class='doc'>{}</div>", doc_to_html(&doc_comments))
+                    } else { String::new() };
+                    content.push_str(&format!("<div class='item fn'>{}<code class='sig'>{}</code></div>\n", doc_html, html_escape(sig)));
+                    doc_comments.clear();
+                } else if !trimmed.starts_with("//") { doc_comments.clear(); }
+            }
+        }
+        nav.push_str("</ul></li>\n");
     }
 
     let html = format!(r#"<!DOCTYPE html>
 <html lang="uk"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Тризуб — Документація</title>
 <style>
+:root {{ --bg: #fff; --fg: #2d3748; --blue: #0057b7; --gold: #ffd700; --border: #e2e8f0; --code-bg: #f7fafc; --sidebar-bg: #f8fafc; --hover: #ebf5ff; }}
+@media (prefers-color-scheme: dark) {{ :root {{ --bg: #1a202c; --fg: #e2e8f0; --blue: #63b3ed; --gold: #ecc94b; --border: #2d3748; --code-bg: #2d3748; --sidebar-bg: #1e2533; --hover: #2a4365; }} }}
 * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-body {{ font-family: -apple-system, sans-serif; display: flex; min-height: 100vh; color: #333; }}
-nav {{ width: 250px; background: #f8f9fa; border-right: 1px solid #dee2e6; padding: 20px; position: fixed; height: 100vh; overflow-y: auto; }}
-nav h3 {{ color: #0057b7; margin-bottom: 15px; font-size: 1.1em; }}
+body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; display: flex; min-height: 100vh; color: var(--fg); background: var(--bg); }}
+nav {{ width: 280px; background: var(--sidebar-bg); border-right: 1px solid var(--border); padding: 20px; position: fixed; height: 100vh; overflow-y: auto; }}
+nav h3 {{ color: var(--blue); margin-bottom: 15px; font-size: 1.1em; display: flex; align-items: center; gap: 8px; }}
 nav ul {{ list-style: none; }}
-nav li {{ margin: 4px 0; }}
-nav a {{ color: #495057; text-decoration: none; font-size: 0.9em; }}
-nav a:hover {{ color: #0057b7; }}
-main {{ margin-left: 250px; padding: 30px 40px; max-width: 800px; line-height: 1.7; }}
-h1 {{ color: #0057b7; border-bottom: 3px solid #ffd700; padding-bottom: 10px; margin-bottom: 20px; }}
-h2 {{ color: #0057b7; margin-top: 30px; padding-top: 15px; border-top: 1px solid #eee; }}
-h3 {{ color: #6c757d; margin-top: 15px; font-size: 1em; }}
-.item {{ margin: 8px 0; padding: 10px; border-left: 3px solid #0057b7; background: #f8f9fa; border-radius: 0 4px 4px 0; }}
-.item.trait {{ border-left-color: #ffd700; }}
-.doc {{ color: #6c757d; font-size: 0.9em; margin-bottom: 4px; }}
-.sig {{ font-family: 'Cascadia Code', monospace; font-size: 0.95em; color: #212529; }}
-#search {{ width: 100%; padding: 6px 10px; border: 1px solid #ced4da; border-radius: 4px; margin-bottom: 15px; }}
+nav li {{ margin: 2px 0; }}
+nav li ul {{ padding-left: 14px; }}
+nav a {{ color: var(--fg); text-decoration: none; font-size: 0.85em; padding: 2px 6px; border-radius: 3px; display: block; }}
+nav a:hover {{ background: var(--hover); color: var(--blue); }}
+.nav-module > a {{ font-weight: 600; font-size: 0.9em; color: var(--blue); }}
+.nav-fn::before {{ content: 'fn'; font-size: 0.7em; color: #805ad5; background: #faf5ff; padding: 1px 4px; border-radius: 2px; margin-right: 4px; font-family: monospace; }}
+.nav-struct::before {{ content: 'S'; font-size: 0.7em; color: #c05621; background: #fffaf0; padding: 1px 5px; border-radius: 2px; margin-right: 4px; font-family: monospace; }}
+.nav-trait::before {{ content: 'T'; font-size: 0.7em; color: #2b6cb0; background: #ebf8ff; padding: 1px 5px; border-radius: 2px; margin-right: 4px; font-family: monospace; }}
+.nav-enum::before {{ content: 'E'; font-size: 0.7em; color: #2f855a; background: #f0fff4; padding: 1px 5px; border-radius: 2px; margin-right: 4px; font-family: monospace; }}
+main {{ margin-left: 280px; padding: 30px 50px; max-width: 900px; line-height: 1.7; }}
+h1 {{ color: var(--blue); border-bottom: 3px solid var(--gold); padding-bottom: 10px; margin-bottom: 30px; font-size: 1.8em; }}
+.module-header {{ color: var(--blue); margin-top: 40px; padding: 10px 0; border-bottom: 2px solid var(--border); font-size: 1.3em; }}
+h3 {{ color: var(--fg); margin-top: 25px; font-size: 1.1em; opacity: 0.8; }}
+.item {{ margin: 12px 0; padding: 12px 16px; border-left: 3px solid var(--blue); background: var(--code-bg); border-radius: 0 6px 6px 0; }}
+.item.fn {{ border-left-color: #805ad5; }}
+.item.struct {{ border-left-color: #c05621; }}
+.item.trait {{ border-left-color: var(--gold); }}
+.item.enum {{ border-left-color: #2f855a; }}
+.item .fields {{ margin: 8px 0 0 20px; font-size: 0.9em; }}
+.item .fields li {{ margin: 2px 0; }}
+.item .methods {{ margin: 8px 0 0 10px; }}
+.item .methods .method {{ padding: 6px 10px; margin: 4px 0; background: var(--bg); border-radius: 4px; border: 1px solid var(--border); }}
+.doc {{ color: #718096; font-size: 0.92em; margin-bottom: 6px; line-height: 1.6; }}
+.doc strong {{ color: var(--fg); }}
+.doc code {{ background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: 0.9em; font-family: 'Cascadia Code', 'Fira Code', monospace; }}
+.doc ul {{ margin: 4px 0 4px 20px; }}
+.doc li {{ margin: 2px 0; }}
+.sig {{ font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 0.9em; color: var(--fg); word-break: break-all; }}
+.sig .kw {{ color: #805ad5; }}
+.sig .type {{ color: #2b6cb0; }}
+.sig .name {{ color: var(--fg); font-weight: 600; }}
+#search {{ width: 100%; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 15px; font-size: 0.9em; background: var(--bg); color: var(--fg); }}
+#search:focus {{ outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px rgba(0,87,183,0.1); }}
+.badge {{ display: inline-block; font-size: 0.7em; padding: 1px 6px; border-radius: 3px; margin-left: 6px; font-weight: normal; }}
+.badge-pub {{ background: #c6f6d5; color: #22543d; }}
+.badge-async {{ background: #e9d8fd; color: #553c9a; }}
+@media (max-width: 768px) {{ nav {{ display: none; }} main {{ margin-left: 0; padding: 20px; }} }}
 </style></head><body>
 <nav>
-<h3>Тризуб Документація</h3>
+<h3>🔱 Тризуб Документація</h3>
 <input type="text" id="search" placeholder="Пошук..." oninput="filterDocs(this.value)">
 <ul>{}</ul>
 </nav>
 <main>
-<h1>Тризуб — Документація API</h1>
+<h1>🔱 Тризуб — Документація API</h1>
 {}
 </main>
 <script>
 function filterDocs(q) {{
+  const lower = q.toLowerCase();
   document.querySelectorAll('.item').forEach(el => {{
-    el.style.display = el.textContent.toLowerCase().includes(q.toLowerCase()) ? '' : 'none';
+    el.style.display = el.textContent.toLowerCase().includes(lower) ? '' : 'none';
+  }});
+  document.querySelectorAll('nav li').forEach(el => {{
+    if (el.classList.contains('nav-module')) return;
+    el.style.display = el.textContent.toLowerCase().includes(lower) ? '' : 'none';
   }});
 }}
 </script>
@@ -2060,4 +2074,230 @@ function filterDocs(q) {{
     println!("Документація згенерована: {}", out_file.display());
     println!("Файлів оброблено: {}", files.len());
     Ok(())
+}
+
+fn doc_generate_decls(decls: &[tryzub_parser::Declaration], module_id: &str, nav: &mut String, content: &mut String, items: &mut Vec<String>, source: &str) {
+    use tryzub_parser::Declaration;
+    let doc_lines = collect_doc_comments(source);
+
+    for decl in decls {
+        match decl {
+            Declaration::Function { name, params, return_type, is_async, visibility, .. } => {
+                let vis_badge = if *visibility == tryzub_parser::Visibility::Public { "<span class='badge badge-pub'>публічний</span>" } else { "" };
+                let async_badge = if *is_async { "<span class='badge badge-async'>асинхронна</span>" } else { "" };
+                let params_str = params.iter().map(|p| format!("{}: {}", p.name, type_to_string(&p.ty))).collect::<Vec<_>>().join(", ");
+                let ret_str = return_type.as_ref().map(|t| format!(" -> {}", type_to_string(t))).unwrap_or_default();
+                let sig = format!("<span class='kw'>функція</span> <span class='name'>{}</span>({}){}", name, html_escape(&params_str), html_escape(&ret_str));
+
+                let doc_html = doc_lines.get(name.as_str()).map(|lines| format!("<div class='doc'>{}</div>", doc_to_html(lines))).unwrap_or_default();
+
+                let item_id = format!("{}_{}", module_id, name);
+                nav.push_str(&format!("<li class='nav-fn'><a href='#{}'>{}</a></li>\n", item_id, name));
+                content.push_str(&format!("<div class='item fn' id='{}'>{}{}{}<code class='sig'>{}</code></div>\n", item_id, vis_badge, async_badge, doc_html, sig));
+                items.push(name.clone());
+            }
+            Declaration::Struct { name, fields, methods, visibility, .. } => {
+                let vis_badge = if *visibility == tryzub_parser::Visibility::Public { "<span class='badge badge-pub'>публічний</span>" } else { "" };
+                let item_id = format!("{}_{}", module_id, name);
+                let doc_html = doc_lines.get(name.as_str()).map(|lines| format!("<div class='doc'>{}</div>", doc_to_html(lines))).unwrap_or_default();
+
+                nav.push_str(&format!("<li class='nav-struct'><a href='#{}'>{}</a></li>\n", item_id, name));
+                content.push_str(&format!("<div class='item struct' id='{}'>{}{}<code class='sig'><span class='kw'>структура</span> <span class='name'>{}</span></code>\n", item_id, vis_badge, doc_html, name));
+
+                if !fields.is_empty() {
+                    content.push_str("<ul class='fields'>\n");
+                    for f in fields {
+                        content.push_str(&format!("<li><code>{}: <span class='type'>{}</span></code></li>\n", f.name, html_escape(&type_to_string(&f.ty))));
+                    }
+                    content.push_str("</ul>\n");
+                }
+                if !methods.is_empty() {
+                    content.push_str("<div class='methods'>\n");
+                    for m in methods {
+                        if let Declaration::Function { name: mname, params, return_type, .. } = m {
+                            let mp = params.iter().filter(|p| p.name != "себе").map(|p| format!("{}: {}", p.name, type_to_string(&p.ty))).collect::<Vec<_>>().join(", ");
+                            let mr = return_type.as_ref().map(|t| format!(" -> {}", type_to_string(t))).unwrap_or_default();
+                            content.push_str(&format!("<div class='method'><code class='sig'>.{}({}){}</code></div>\n", mname, html_escape(&mp), html_escape(&mr)));
+                        }
+                    }
+                    content.push_str("</div>\n");
+                }
+                content.push_str("</div>\n");
+                items.push(name.clone());
+            }
+            Declaration::Trait { name, methods, visibility, .. } => {
+                let vis_badge = if *visibility == tryzub_parser::Visibility::Public { "<span class='badge badge-pub'>публічний</span>" } else { "" };
+                let item_id = format!("{}_{}", module_id, name);
+                let doc_html = doc_lines.get(name.as_str()).map(|lines| format!("<div class='doc'>{}</div>", doc_to_html(lines))).unwrap_or_default();
+
+                nav.push_str(&format!("<li class='nav-trait'><a href='#{}'>{}</a></li>\n", item_id, name));
+                content.push_str(&format!("<div class='item trait' id='{}'>{}{}<code class='sig'><span class='kw'>трейт</span> <span class='name'>{}</span></code>\n", item_id, vis_badge, doc_html, name));
+
+                if !methods.is_empty() {
+                    content.push_str("<div class='methods'>\n");
+                    for m in methods {
+                        let mp = m.params.iter().filter(|p| p.name != "себе").map(|p| format!("{}: {}", p.name, type_to_string(&p.ty))).collect::<Vec<_>>().join(", ");
+                        let mr = m.return_type.as_ref().map(|t| format!(" -> {}", type_to_string(t))).unwrap_or_default();
+                        let default = if m.default_body.is_some() { " <span class='badge' style='background:#e2e8f0;color:#4a5568;'>за замовч.</span>" } else { "" };
+                        content.push_str(&format!("<div class='method'><code class='sig'>.{}({}){}</code>{}</div>\n", m.name, html_escape(&mp), html_escape(&mr), default));
+                    }
+                    content.push_str("</div>\n");
+                }
+                content.push_str("</div>\n");
+                items.push(name.clone());
+            }
+            Declaration::Enum { name, variants, visibility, .. } => {
+                let vis_badge = if *visibility == tryzub_parser::Visibility::Public { "<span class='badge badge-pub'>публічний</span>" } else { "" };
+                let item_id = format!("{}_{}", module_id, name);
+                let doc_html = doc_lines.get(name.as_str()).map(|lines| format!("<div class='doc'>{}</div>", doc_to_html(lines))).unwrap_or_default();
+
+                nav.push_str(&format!("<li class='nav-enum'><a href='#{}'>{}</a></li>\n", item_id, name));
+                content.push_str(&format!("<div class='item enum' id='{}'>{}{}<code class='sig'><span class='kw'>перелік</span> <span class='name'>{}</span></code>\n", item_id, vis_badge, doc_html, name));
+
+                if !variants.is_empty() {
+                    content.push_str("<ul class='fields'>\n");
+                    for v in variants {
+                        if v.fields.is_empty() {
+                            content.push_str(&format!("<li><code>{}</code></li>\n", v.name));
+                        } else {
+                            let fields_str = v.fields.iter().map(|f| {
+                                if let Some(ref n) = f.name { format!("{}: {}", n, type_to_string(&f.ty)) }
+                                else { type_to_string(&f.ty) }
+                            }).collect::<Vec<_>>().join(", ");
+                            content.push_str(&format!("<li><code>{}({})</code></li>\n", v.name, html_escape(&fields_str)));
+                        }
+                    }
+                    content.push_str("</ul>\n");
+                }
+                content.push_str("</div>\n");
+                items.push(name.clone());
+            }
+            Declaration::Module { name, declarations, .. } => {
+                content.push_str(&format!("<h3>Модуль: {}</h3>\n", name));
+                doc_generate_decls(declarations, &format!("{}_{}", module_id, name), nav, content, items, source);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_doc_comments(source: &str) -> std::collections::HashMap<&str, Vec<String>> {
+    let mut map = std::collections::HashMap::new();
+    let mut current_docs: Vec<String> = Vec::new();
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("///") {
+            current_docs.push(trimmed[3..].trim().to_string());
+        } else if !current_docs.is_empty() {
+            let name_part = trimmed
+                .trim_start_matches("публічний ")
+                .trim_start_matches("асинхронна ")
+                .trim_start_matches("функція ")
+                .trim_start_matches("структура ")
+                .trim_start_matches("трейт ")
+                .trim_start_matches("перелік ");
+            if let Some(name) = name_part.split(|c: char| c == '(' || c == '{' || c == '<' || c.is_whitespace()).next() {
+                if !name.is_empty() {
+                    map.insert(name, current_docs.clone());
+                }
+            }
+            current_docs.clear();
+        } else {
+            current_docs.clear();
+        }
+    }
+    map
+}
+
+fn doc_to_html(lines: &[String]) -> String {
+    let mut html = String::new();
+    let mut in_list = false;
+    for line in lines {
+        if line.starts_with("- ") || line.starts_with("* ") {
+            if !in_list { html.push_str("<ul>"); in_list = true; }
+            let item = &line[2..];
+            html.push_str(&format!("<li>{}</li>", doc_inline_format(item)));
+        } else {
+            if in_list { html.push_str("</ul>"); in_list = false; }
+            if line.is_empty() { html.push_str("<br>"); }
+            else { html.push_str(&doc_inline_format(line)); html.push(' '); }
+        }
+    }
+    if in_list { html.push_str("</ul>"); }
+    html
+}
+
+fn doc_inline_format(text: &str) -> String {
+    let result = html_escape(text);
+    let mut out = String::new();
+    let chars: Vec<char> = result.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '`' {
+            if let Some(end) = chars[i+1..].iter().position(|&c| c == '`') {
+                let code: String = chars[i+1..i+1+end].iter().collect();
+                out.push_str(&format!("<code>{}</code>", code));
+                i = i + 2 + end;
+                continue;
+            }
+        }
+        if chars[i] == '*' && i + 1 < chars.len() && chars[i + 1] == '*' {
+            if let Some(end) = find_double(&chars, i + 2, '*') {
+                let bold: String = chars[i+2..end].iter().collect();
+                out.push_str(&format!("<strong>{}</strong>", bold));
+                i = end + 2;
+                continue;
+            }
+        }
+        if chars[i] == '*' && (i == 0 || chars[i-1] != '*') {
+            if let Some(end) = chars[i+1..].iter().position(|&c| c == '*') {
+                if i + 1 + end < chars.len() && (i + 1 + end + 1 >= chars.len() || chars[i + 1 + end + 1] != '*') {
+                    let em: String = chars[i+1..i+1+end].iter().collect();
+                    out.push_str(&format!("<em>{}</em>", em));
+                    i = i + 2 + end;
+                    continue;
+                }
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+fn find_double(chars: &[char], start: usize, ch: char) -> Option<usize> {
+    let mut i = start;
+    while i + 1 < chars.len() {
+        if chars[i] == ch && chars[i + 1] == ch { return Some(i); }
+        i += 1;
+    }
+    None
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+fn type_to_string(ty: &tryzub_parser::Type) -> String {
+    use tryzub_parser::Type;
+    match ty {
+        Type::Цл8 => "цл8".into(), Type::Цл16 => "цл16".into(), Type::Цл32 => "цл32".into(), Type::Цл64 => "цл64".into(),
+        Type::Чс8 => "чс8".into(), Type::Чс16 => "чс16".into(), Type::Чс32 => "чс32".into(), Type::Чс64 => "чс64".into(),
+        Type::Дрб32 => "дрб32".into(), Type::Дрб64 => "дрб64".into(),
+        Type::Лог => "лог".into(), Type::Сим => "сим".into(), Type::Тхт => "тхт".into(),
+        Type::Named(n) => n.clone(),
+        Type::Array(inner, size) => format!("[{}; {}]", type_to_string(inner), size),
+        Type::Slice(inner) => format!("[{}]", type_to_string(inner)),
+        Type::Tuple(types) => format!("({})", types.iter().map(|t| type_to_string(t)).collect::<Vec<_>>().join(", ")),
+        Type::Optional(inner) => format!("Опція<{}>", type_to_string(inner)),
+        Type::Result(ok, err) => format!("Результат<{}, {}>", type_to_string(ok), type_to_string(err)),
+        Type::Generic(name, args) => format!("{}<{}>", name, args.iter().map(|t| type_to_string(t)).collect::<Vec<_>>().join(", ")),
+        Type::Reference(inner, mutable) => format!("{}{}", if *mutable { "&мут " } else { "&" }, type_to_string(inner)),
+        Type::Function(params, ret) => {
+            let p = params.iter().map(|t| type_to_string(t)).collect::<Vec<_>>().join(", ");
+            if let Some(r) = ret { format!("функція({}) -> {}", p, type_to_string(r)) }
+            else { format!("функція({})", p) }
+        }
+        Type::SelfType => "себе".into(),
+    }
 }
