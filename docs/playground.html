@@ -34,6 +34,7 @@ button:hover { background: #ffed4a; }
 <a onclick="loadExample('pattern')">Зіставлення</a>
 </div>
 <button onclick="runCode()">Запустити</button>
+<button onclick="shareCode()" style="background:#fff;color:#0057b7;">Поділитись</button>
 </header>
 <main>
 <div class="editor-panel">
@@ -68,7 +69,25 @@ function loadExample(name) {
 
 function runCode() {
     const output = document.getElementById('output');
-    output.innerHTML = '<span class="success">Виконання... (потрібен бекенд сервер)</span>\n\nЦе демо-playground. Для запуску коду встановіть Тризуб:\n  cargo install --path .\n  тризуб запустити файл.тризуб';
+    const code = document.getElementById('code').value;
+    output.innerHTML = '<span class="success">Виконання...</span>\n\nДля запуску коду встановіть Тризуб:\n  git clone https://github.com/Evge14n/tryzub\n  cd tryzub && cargo install --path .\n  echo \'' + code.split('\n')[0] + '...\' > prog.тризуб\n  тризуб запустити prog.тризуб';
+    window.location.hash = btoa(unescape(encodeURIComponent(code)));
+}
+
+function shareCode() {
+    const code = document.getElementById('code').value;
+    window.location.hash = btoa(unescape(encodeURIComponent(code)));
+    navigator.clipboard.writeText(window.location.href).then(() => {
+        document.getElementById('time').textContent = 'Посилання скопійовано!';
+        setTimeout(() => { document.getElementById('time').textContent = ''; }, 2000);
+    });
+}
+
+if (window.location.hash.length > 1) {
+    try {
+        const decoded = decodeURIComponent(escape(atob(window.location.hash.slice(1))));
+        document.getElementById('code').value = decoded;
+    } catch(e) {}
 }
 
 document.getElementById('code').addEventListener('keydown', function(e) {
