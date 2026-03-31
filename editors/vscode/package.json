@@ -23,6 +23,12 @@
         "scopeName": "source.tryzub",
         "path": "./syntaxes/tryzub.tmLanguage.json"
       }
+    ],
+    "snippets": [
+      {
+        "language": "tryzub",
+        "path": "./snippets/tryzub.json"
+      }
     ]
   }
 }
