@@ -1585,33 +1585,166 @@ fn run_lint(file: PathBuf) -> Result<()> {
 fn lint_ast(program: &tryzub_parser::Program, _source: &str, warnings: &mut Vec<String>) {
     use tryzub_parser::Declaration;
 
+    let mut all_used_idents = std::collections::HashSet::new();
+    let mut defined_enums: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+
     for decl in &program.declarations {
-        if let Declaration::Function { name, params, body, .. } = decl {
-            if body.len() > 50 {
-                warnings.push(format!("функція '{}': занадто довга ({} операторів, макс 50)", name, body.len()));
+        if let Declaration::Enum { name, variants, .. } = decl {
+            defined_enums.insert(name.clone(), variants.iter().map(|v| v.name.clone()).collect());
+        }
+    }
+
+    for decl in &program.declarations {
+        match decl {
+            Declaration::Function { name, params, body, .. } => {
+                if body.len() > 50 {
+                    warnings.push(format!("функція '{}': занадто довга ({} операторів, макс 50)", name, body.len()));
+                }
+
+                let mut declared: Vec<String> = params.iter()
+                    .filter(|p| p.name != "себе")
+                    .map(|p| p.name.clone())
+                    .collect();
+                for stmt in body { collect_declared_vars(stmt, &mut declared); }
+
+                let mut used = std::collections::HashSet::new();
+                for stmt in body { collect_used_idents_stmt(stmt, &mut used); }
+                all_used_idents.extend(used.clone());
+
+                for var in &declared {
+                    if !used.contains(var.as_str()) && !var.starts_with('_') {
+                        let is_param = params.iter().any(|p| &p.name == var);
+                        if is_param {
+                            warnings.push(format!("функція '{}': параметр '{}' не використовується", name, var));
+                        } else {
+                            warnings.push(format!("функція '{}': змінна '{}' оголошена але не використовується", name, var));
+                        }
+                    }
+                }
+
+                for stmt in body { check_empty_catch(stmt, name, warnings); }
+                check_shadowing(body, &declared, name, warnings);
+                check_match_arms(body, &defined_enums, name, warnings);
             }
+            _ => {}
+        }
+    }
 
-            let mut declared: Vec<String> = params.iter()
-                .filter(|p| p.name != "себе")
-                .map(|p| p.name.clone())
-                .collect();
-            for stmt in body { collect_declared_vars(stmt, &mut declared); }
+    check_unused_imports(program, &all_used_idents, warnings);
+}
 
-            let mut used = std::collections::HashSet::new();
-            for stmt in body { collect_used_idents_stmt(stmt, &mut used); }
+fn check_shadowing(stmts: &[tryzub_parser::Statement], outer_vars: &[String], fn_name: &str, warnings: &mut Vec<String>) {
+    use tryzub_parser::Statement;
+    for stmt in stmts {
+        match stmt {
+            Statement::Block(inner) => {
+                let mut inner_declared = Vec::new();
+                for s in inner { collect_declared_vars(s, &mut inner_declared); }
+                for var in &inner_declared {
+                    if outer_vars.contains(var) && !var.starts_with('_') {
+                        warnings.push(format!("функція '{}': змінна '{}' затінює зовнішню змінну (shadowing)", fn_name, var));
+                    }
+                }
+                let mut combined = outer_vars.to_vec();
+                combined.extend(inner_declared);
+                check_shadowing(inner, &combined, fn_name, warnings);
+            }
+            Statement::If { then_branch, else_branch, .. } => {
+                check_shadowing_stmt(then_branch, outer_vars, fn_name, warnings);
+                if let Some(eb) = else_branch { check_shadowing_stmt(eb, outer_vars, fn_name, warnings); }
+            }
+            Statement::While { body, .. } => check_shadowing_stmt(body, outer_vars, fn_name, warnings),
+            Statement::For { body, .. } => check_shadowing_stmt(body, outer_vars, fn_name, warnings),
+            Statement::ForIn { body, .. } => check_shadowing_stmt(body, outer_vars, fn_name, warnings),
+            _ => {}
+        }
+    }
+}
 
-            for var in &declared {
-                if !used.contains(var.as_str()) && !var.starts_with('_') {
-                    let is_param = params.iter().any(|p| &p.name == var);
-                    if is_param {
-                        warnings.push(format!("функція '{}': параметр '{}' не використовується", name, var));
-                    } else {
-                        warnings.push(format!("функція '{}': змінна '{}' оголошена але не використовується", name, var));
+fn check_shadowing_stmt(stmt: &tryzub_parser::Statement, outer_vars: &[String], fn_name: &str, warnings: &mut Vec<String>) {
+    use tryzub_parser::Statement;
+    match stmt {
+        Statement::Block(stmts) => {
+            let mut inner_declared = Vec::new();
+            for s in stmts { collect_declared_vars(s, &mut inner_declared); }
+            for var in &inner_declared {
+                if outer_vars.contains(var) && !var.starts_with('_') {
+                    warnings.push(format!("функція '{}': змінна '{}' затінює зовнішню змінну (shadowing)", fn_name, var));
+                }
+            }
+            let mut combined = outer_vars.to_vec();
+            combined.extend(inner_declared);
+            check_shadowing(stmts, &combined, fn_name, warnings);
+        }
+        _ => {}
+    }
+}
+
+fn check_match_arms(stmts: &[tryzub_parser::Statement], enums: &std::collections::HashMap<String, Vec<String>>, fn_name: &str, warnings: &mut Vec<String>) {
+    use tryzub_parser::{Statement, Expression, Pattern};
+    for stmt in stmts {
+        match stmt {
+            Statement::Expression(Expression::Match { subject, arms }) => {
+                if let Expression::Identifier(ref name) = **subject {
+                    let _ = name;
+                }
+                let mut covered_variants: Vec<String> = Vec::new();
+                let mut has_wildcard = false;
+                for arm in arms {
+                    match &arm.pattern {
+                        Pattern::Variant { name, .. } => { covered_variants.push(name.clone()); }
+                        Pattern::Wildcard | Pattern::Binding(_) => { has_wildcard = true; }
+                        _ => {}
+                    }
+                }
+                if !has_wildcard && !covered_variants.is_empty() {
+                    for (enum_name, variants) in enums {
+                        let all_match = covered_variants.iter().all(|v| variants.contains(v));
+                        if all_match && covered_variants.len() < variants.len() {
+                            let missing: Vec<&String> = variants.iter().filter(|v| !covered_variants.contains(v)).collect();
+                            warnings.push(format!("функція '{}': зіставлення '{}' не покриває варіанти: {}", fn_name, enum_name, missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")));
+                        }
                     }
                 }
             }
+            Statement::Block(inner) => check_match_arms(inner, enums, fn_name, warnings),
+            Statement::If { then_branch, else_branch, .. } => {
+                check_match_arms_stmt(then_branch, enums, fn_name, warnings);
+                if let Some(eb) = else_branch { check_match_arms_stmt(eb, enums, fn_name, warnings); }
+            }
+            Statement::While { body, .. } | Statement::For { body, .. } | Statement::ForIn { body, .. } => {
+                check_match_arms_stmt(body, enums, fn_name, warnings);
+            }
+            _ => {}
+        }
+    }
+}
 
-            for stmt in body { check_empty_catch(stmt, name, warnings); }
+fn check_match_arms_stmt(stmt: &tryzub_parser::Statement, enums: &std::collections::HashMap<String, Vec<String>>, fn_name: &str, warnings: &mut Vec<String>) {
+    if let tryzub_parser::Statement::Block(stmts) = stmt {
+        check_match_arms(stmts, enums, fn_name, warnings);
+    }
+}
+
+fn check_unused_imports(program: &tryzub_parser::Program, used_idents: &std::collections::HashSet<String>, warnings: &mut Vec<String>) {
+    use tryzub_parser::Declaration;
+    for decl in &program.declarations {
+        if let Declaration::Import { path, items, alias } = decl {
+            if let Some(items) = items {
+                for item in items {
+                    if !used_idents.contains(item) {
+                        warnings.push(format!("невикористаний імпорт: '{}'", item));
+                    }
+                }
+            } else if let Some(alias) = alias {
+                if !used_idents.contains(alias) {
+                    warnings.push(format!("невикористаний імпорт: '{}'", alias));
+                }
+            } else if let Some(last) = path.last() {
+                if !used_idents.contains(last) {
+                    warnings.push(format!("невикористаний імпорт: '{}'", last));
+                }
+            }
         }
     }
 }
@@ -1728,6 +1861,13 @@ fn check_empty_catch(stmt: &tryzub_parser::Statement, fn_name: &str, warnings: &
     match stmt {
         Statement::TryCatch { catch_body: None, .. } => {
             warnings.push(format!("функція '{}': порожній catch блок", fn_name));
+        }
+        Statement::TryCatch { catch_body: Some(body), .. } => {
+            if let Statement::Block(stmts) = body.as_ref() {
+                if stmts.is_empty() {
+                    warnings.push(format!("функція '{}': порожній catch блок", fn_name));
+                }
+            }
         }
         Statement::Block(stmts) => {
             for s in stmts { check_empty_catch(s, fn_name, warnings); }
