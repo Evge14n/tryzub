@@ -465,11 +465,11 @@ fn watch_file(file: PathBuf) -> Result<()> {
         while rx.try_recv().is_ok() {}
         // Wait for next change
         let _ = rx.recv();
-        // Small debounce
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(std::time::Duration::from_millis(300));
         while rx.try_recv().is_ok() {}
 
-        print!("\x1b[2J\x1b[H"); // clear screen
+        print!("\x1b[2J\x1b[H");
+        println!("\x1b[33m🔄 Змінено: {} → перезапуск\x1b[0m\n", file.file_name().unwrap_or_default().to_string_lossy());
     }
 }
 
