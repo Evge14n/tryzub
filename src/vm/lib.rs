@@ -392,6 +392,7 @@ pub struct VM {
     /// Лічильник операцій VM (для профілювання)
     op_count: u64,
     /// Лічильник для GC — запускати кожні N операцій
+    #[allow(dead_code)]
     gc_threshold: u64,
     /// Випадковий JWT секрет (генерується при створенні VM)
     default_jwt_secret: String,
