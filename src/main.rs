@@ -75,6 +75,10 @@ enum Commands {
     #[command(name = "інтерактив")]
     Repl,
 
+    /// Оновити всі залежності
+    #[command(name = "оновити")]
+    Update,
+
     /// Веб-сервер команди
     #[command(name = "веб")]
     Web {
@@ -200,6 +204,7 @@ fn main() {
         Commands::Lint { file } => run_lint(file),
         Commands::Doc { path, output } => run_doc(path, output),
         Commands::Install { package } => run_install(package),
+        Commands::Update => run_update(),
         Commands::Run { file, fast, jit, args } => run_file(file, fast, jit, args),
         Commands::Watch { file } => watch_file(file),
         Commands::Compile { file, output, native, kernel } => compile_file(file, output, native, kernel),
@@ -932,6 +937,36 @@ fn run_install(package: Option<String>) -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+fn run_update() -> Result<()> {
+    let modules_dir = ".тризуб_модулі";
+    if !std::path::Path::new(modules_dir).exists() {
+        println!("Немає встановлених модулів");
+        return Ok(());
+    }
+    let mut updated = 0;
+    for entry in fs::read_dir(modules_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() && path.join(".git").exists() {
+            let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            print!("Оновлення {}... ", name);
+            let output = std::process::Command::new("git")
+                .args(["pull", "--ff-only"])
+                .current_dir(&path)
+                .output()?;
+            if output.status.success() {
+                let hash = get_git_hash(&path.to_string_lossy())?;
+                println!("✓ ({})", &hash[..8.min(hash.len())]);
+                updated += 1;
+            } else {
+                println!("✗ помилка");
+            }
+        }
+    }
+    println!("Оновлено модулів: {}", updated);
     Ok(())
 }
 
