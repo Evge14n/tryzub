@@ -1388,24 +1388,33 @@ fn run_format(file: PathBuf, check_only: bool) -> Result<()> {
     let mut indent_level: i32 = 0;
     let mut prev_was_empty = false;
     let mut prev_was_func_end = false;
+    let mut consecutive_empty = 0;
 
     for line in source.lines() {
-        let trimmed = line.trim_end();
-        let content = trimmed.trim();
+        let content = line.trim();
 
         if content.is_empty() {
-            if !prev_was_empty {
+            consecutive_empty += 1;
+            if consecutive_empty <= 1 {
                 formatted.push('\n');
                 prev_was_empty = true;
             }
             continue;
         }
+        consecutive_empty = 0;
 
         let is_func_start = content.starts_with("функція ")
             || content.starts_with("асинхронна функція ")
-            || content.starts_with("публічний функція ");
+            || content.starts_with("публічний функція ")
+            || content.starts_with("структура ")
+            || content.starts_with("трейт ")
+            || content.starts_with("реалізація ");
 
-        if is_func_start && !formatted.is_empty() && !prev_was_empty && !prev_was_func_end {
+        if is_func_start && !formatted.is_empty() && !prev_was_empty {
+            formatted.push('\n');
+        }
+
+        if prev_was_func_end && !is_func_start && !content.starts_with('}') && !prev_was_empty {
             formatted.push('\n');
         }
 
@@ -1418,15 +1427,12 @@ fn run_format(file: PathBuf, check_only: bool) -> Result<()> {
         }
 
         let processed = format_line_ops(content);
+        let processed = format_keyword_spacing(&processed);
 
         let indent = "    ".repeat(indent_level as usize);
         let full_line = format!("{}{}", indent, processed);
 
-        if full_line.chars().count() > 100 && !content.contains("//") && !content.contains('"') {
-            formatted.push_str(&full_line);
-        } else {
-            formatted.push_str(&full_line);
-        }
+        formatted.push_str(&full_line);
         formatted.push('\n');
 
         if content.ends_with('{') || content.ends_with('[') {
@@ -1434,6 +1440,9 @@ fn run_format(file: PathBuf, check_only: bool) -> Result<()> {
         }
     }
 
+    while formatted.ends_with("\n\n\n") {
+        formatted.truncate(formatted.len() - 1);
+    }
     while formatted.ends_with("\n\n") {
         formatted.pop();
     }
@@ -1493,6 +1502,24 @@ fn format_line_ops(line: &str) -> String {
             continue;
         }
 
+        if c == '&' && i + 1 < len && chars[i + 1] == '&' {
+            let prev_c = if i > 0 { chars[i - 1] } else { ' ' };
+            if prev_c != ' ' { result.push(' '); }
+            result.push_str("&&");
+            if i + 2 < len && chars[i + 2] != ' ' { result.push(' '); }
+            i += 2;
+            continue;
+        }
+
+        if c == '|' && i + 1 < len && chars[i + 1] == '|' {
+            let prev_c = if i > 0 { chars[i - 1] } else { ' ' };
+            if prev_c != ' ' { result.push(' '); }
+            result.push_str("||");
+            if i + 2 < len && chars[i + 2] != ' ' { result.push(' '); }
+            i += 2;
+            continue;
+        }
+
         let is_op = matches!(c, '+' | '-' | '*' | '/' | '%' | '=' | '<' | '>' | '!');
         if is_op && !in_string {
             let next = if i + 1 < len { chars[i + 1] } else { ' ' };
@@ -1509,7 +1536,7 @@ fn format_line_ops(line: &str) -> String {
                 i += 2;
                 continue;
             }
-            if c == '+' && next == '=' || c == '-' && next == '=' || c == '*' && next == '=' || c == '/' && next == '=' {
+            if (c == '+' && next == '=') || (c == '-' && next == '=') || (c == '*' && next == '=') || (c == '/' && next == '=') || (c == '%' && next == '=') {
                 let op: String = chars[i..i+2].iter().collect();
                 if i > 0 && prev_c != ' ' { result.push(' '); }
                 result.push_str(&op);
@@ -1519,7 +1546,7 @@ fn format_line_ops(line: &str) -> String {
             }
             if c == '|' && next == '>' { result.push_str(" |> "); i += 2; continue; }
 
-            if c == '=' && prev_c != '!' && prev_c != '<' && prev_c != '>' && prev_c != '+' && prev_c != '-' && prev_c != '*' && prev_c != '/' {
+            if c == '=' && prev_c != '!' && prev_c != '<' && prev_c != '>' && prev_c != '+' && prev_c != '-' && prev_c != '*' && prev_c != '/' && prev_c != '%' {
                 if i > 0 && prev_c != ' ' { result.push(' '); }
                 result.push(c);
                 if next != ' ' && next != '=' { result.push(' '); }
@@ -1532,10 +1559,45 @@ fn format_line_ops(line: &str) -> String {
                 i += 1;
                 continue;
             }
+
+            if matches!(c, '+' | '-' | '*' | '/' | '%') && prev_c != ' ' && next != '=' {
+                if c != '*' || (prev_c != '*' && next != '*') {
+                    result.push(' ');
+                    result.push(c);
+                    if next != ' ' { result.push(' '); }
+                    i += 1;
+                    continue;
+                }
+            }
+            if matches!(c, '+' | '-' | '*' | '/' | '%') && next != ' ' && next != '=' && prev_c == ' ' {
+                result.push(c);
+                if next != ' ' && next != ')' && next != ']' { result.push(' '); }
+                i += 1;
+                continue;
+            }
+
+            if matches!(c, '<' | '>') && next != '=' && prev_c != '-' && prev_c != '=' {
+                if i > 0 && prev_c != ' ' { result.push(' '); }
+                result.push(c);
+                if next != ' ' && next != '=' { result.push(' '); }
+                i += 1;
+                continue;
+            }
         }
 
         result.push(c);
         i += 1;
+    }
+    result
+}
+
+fn format_keyword_spacing(line: &str) -> String {
+    let keywords = ["якщо", "поки", "для", "інакше якщо"];
+    let mut result = line.to_string();
+    for kw in &keywords {
+        let no_space = format!("{}(", kw);
+        let with_space = format!("{} (", kw);
+        result = result.replace(&no_space, &with_space);
     }
     result
 }
