@@ -157,9 +157,14 @@ impl JitCompiler {
                     // add rsp, 32
                     self.emit(&[0x48, 0x83, 0xC4, 0x20]);
                 }
+                Op::Return => {
+                    self.emit(&[0x58]); // pop rax (return value)
+                    self.emit(&[0x48, 0x89, 0xEC]); // mov rsp, rbp
+                    self.emit(&[0x5D]); // pop rbp
+                    self.emit(&[0xC3]); // ret
+                }
                 Op::Halt => {
-                    // pop rax (return value); epilogue
-                    self.emit(&[0x58]); // pop rax
+                    self.emit(&[0x58]); // pop rax (return value)
                     self.emit(&[0x48, 0x89, 0xEC]); // mov rsp, rbp
                     self.emit(&[0x5D]); // pop rbp
                     self.emit(&[0xC3]); // ret
