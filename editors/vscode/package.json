@@ -1,11 +1,18 @@
 {
   "name": "tryzub-lang",
-  "displayName": "Тризуб",
-  "description": "Syntax highlighting and LSP support for the Tryzub programming language",
+  "displayName": "Тризуб — Українська мова програмування",
+  "description": "Syntax highlighting, LSP, snippets and code intelligence for Tryzub (Тризуб) programming language",
   "version": "1.0.0",
   "publisher": "Evge14n",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Evge14n/tryzub"
+  },
   "engines": { "vscode": "^1.80.0" },
-  "categories": ["Programming Languages"],
+  "categories": ["Programming Languages", "Snippets", "Linters", "Formatters"],
+  "keywords": ["tryzub", "тризуб", "ukrainian", "programming language", "ukraine"],
+  "icon": "icon.png",
   "activationEvents": ["onLanguage:tryzub"],
   "main": "./extension.js",
   "contributes": {
@@ -14,7 +21,11 @@
         "id": "tryzub",
         "aliases": ["Тризуб", "Tryzub", "tryzub"],
         "extensions": [".тризуб", ".tryzub"],
-        "configuration": "./language-configuration.json"
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icon.png",
+          "dark": "./icon.png"
+        }
       }
     ],
     "grammars": [
@@ -29,6 +40,16 @@
         "language": "tryzub",
         "path": "./snippets/tryzub.json"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Тризуб",
+      "properties": {
+        "tryzub.lsp.path": {
+          "type": "string",
+          "default": "tryzub",
+          "description": "Path to the Tryzub executable for LSP server"
+        }
+      }
+    }
   }
 }

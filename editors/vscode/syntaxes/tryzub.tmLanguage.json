@@ -13,7 +13,7 @@
   "repository": {
     "comments": {
       "patterns": [
-        { "name": "comment.line.double-slash.tryzub", "match": "///.*$" },
+        { "name": "comment.line.documentation.tryzub", "match": "///.*$" },
         { "name": "comment.line.double-slash.tryzub", "match": "//.*$" },
         { "name": "comment.block.tryzub", "begin": "/\\*", "end": "\\*/" }
       ]
@@ -21,12 +21,19 @@
     "strings": {
       "patterns": [
         {
-          "name": "string.quoted.double.tryzub",
+          "name": "string.interpolated.tryzub",
           "begin": "ф\"",
           "end": "\"",
           "patterns": [
             { "name": "constant.character.escape.tryzub", "match": "\\\\." },
-            { "name": "variable.other.interpolation.tryzub", "match": "\\{[^}]+\\}" }
+            {
+              "name": "meta.interpolation.tryzub",
+              "begin": "\\{",
+              "end": "\\}",
+              "beginCaptures": { "0": { "name": "punctuation.definition.interpolation.begin.tryzub" } },
+              "endCaptures": { "0": { "name": "punctuation.definition.interpolation.end.tryzub" } },
+              "patterns": [{ "include": "source.tryzub" }]
+            }
           ]
         },
         {
@@ -50,39 +57,72 @@
     "numbers": {
       "patterns": [
         { "name": "constant.numeric.float.tryzub", "match": "\\b\\d+\\.\\d+\\b" },
-        { "name": "constant.numeric.hex.tryzub", "match": "\\b0x[0-9a-fA-F]+\\b" },
-        { "name": "constant.numeric.binary.tryzub", "match": "\\b0b[01]+\\b" },
-        { "name": "constant.numeric.integer.tryzub", "match": "\\b\\d+\\b" }
+        { "name": "constant.numeric.hex.tryzub", "match": "\\b0x[0-9a-fA-F_]+\\b" },
+        { "name": "constant.numeric.binary.tryzub", "match": "\\b0b[01_]+\\b" },
+        { "name": "constant.numeric.integer.tryzub", "match": "\\b\\d[\\d_]*\\b" }
       ]
     },
     "keywords": {
       "patterns": [
         {
           "name": "keyword.control.tryzub",
-          "match": "\\b(якщо|інакше|поки|для|в|від|до|зіставити|повернути|перервати|продовжити|спробувати|зловити|нарешті|чекати|віддати|імпорт|як|з)\\b"
+          "match": "\\b(якщо|інакше|поки|для|в|від|до|через|зіставити|повернути|перервати|переривати|продовжити|спробувати|зловити|нарешті|чекати|віддати|взяти|імпорт|експорт|як|де|з_обробником)\\b"
         },
         {
           "name": "keyword.declaration.tryzub",
-          "match": "\\b(функція|змінна|стала|структура|тип|трейт|реалізація|модуль|асинхронна|публічний|приватний)\\b"
+          "match": "\\b(функція|змінна|стала|структура|тип|трейт|реалізація|реалізує|інтерфейс|модуль|перелік|асинхронна|асинхронний|публічний|приватний|статичний|макрос|тест|фаз|бенчмарк)\\b"
         },
         {
-          "name": "keyword.other.tryzub",
-          "match": "\\b(друк|себе|це|потік|все|перегони|канал)\\b"
+          "name": "keyword.other.system.tryzub",
+          "match": "\\b(небезпечний|асемблер|зовнішній|розмір|зміщення|вирівняний|упакований|мінливий|переривання|компчас|вбудований|невбудований|гарячий|холодний)\\b"
+        },
+        {
+          "name": "keyword.other.concurrency.tryzub",
+          "match": "\\b(потік|канал|все|перегони|спільний)\\b"
+        },
+        {
+          "name": "keyword.other.contract.tryzub",
+          "match": "\\b(вимагає|гарантує|старе|інваріант|чистий|ефект)\\b"
+        },
+        {
+          "name": "keyword.other.security.tryzub",
+          "match": "\\b(можливість|дозвіл|пісочниця|персистентний|летючий|стійкий)\\b"
+        },
+        {
+          "name": "keyword.other.oop.tryzub",
+          "match": "\\b(новий|це|себе|супер)\\b"
+        },
+        {
+          "name": "keyword.other.debug.tryzub",
+          "match": "\\b(відлагодити|зупинка|назад|розгалужити|перевірити|виміряти)\\b"
+        },
+        {
+          "name": "keyword.other.ui.tryzub",
+          "match": "\\b(вікно|стовпець|сітка|кнопка)\\b"
+        },
+        {
+          "name": "support.function.builtin.tryzub",
+          "match": "\\b(друк|довжина|діапазон|фільтрувати|перетворити|згорнути|сортувати|корінь|синус|косинус|абс|мін|макс|тип_значення|файл_прочитати|файл_записати|json_розібрати)\\b"
         }
       ]
     },
     "types": {
       "patterns": [
         {
-          "name": "support.type.tryzub",
-          "match": "\\b(цл8|цл16|цл32|цл64|дрб32|дрб64|лог|тхт|сим|чс8|чс16|чс32|чс64)\\b"
+          "name": "support.type.primitive.tryzub",
+          "match": "\\b(цл8|цл16|цл32|цл64|чс8|чс16|чс32|чс64|дрб32|дрб64|лог|тхт|сим|чсрозм|цлрозм|вказівник|пусто)\\b"
+        },
+        {
+          "name": "support.type.generic.tryzub",
+          "match": "\\b(Опція|Результат|Масив|Вектор|Словник|Множина)\\b"
         }
       ]
     },
     "constants": {
       "patterns": [
-        { "name": "constant.language.tryzub", "match": "\\b(істина|хиба|нуль|Нічого)\\b" },
-        { "name": "support.function.builtin.tryzub", "match": "\\b(Деякий|Успіх|Помилка)\\b" }
+        { "name": "constant.language.boolean.tryzub", "match": "\\b(істина|хиба)\\b" },
+        { "name": "constant.language.null.tryzub", "match": "\\b(нуль|Нічого)\\b" },
+        { "name": "support.type.result.tryzub", "match": "\\b(Деякий|Успіх|Помилка)\\b" }
       ]
     },
     "functions": {
@@ -95,8 +135,16 @@
     },
     "operators": {
       "patterns": [
-        { "name": "keyword.operator.tryzub", "match": "\\|>|->|=>|==|!=|<=|>=|\\+=|-=|\\*=|/=|&&|\\|\\||!" },
-        { "name": "keyword.operator.tryzub", "match": "[+\\-*/%<>=]" }
+        { "name": "keyword.operator.pipe.tryzub", "match": "\\|>" },
+        { "name": "keyword.operator.arrow.tryzub", "match": "->" },
+        { "name": "keyword.operator.fat-arrow.tryzub", "match": "=>" },
+        { "name": "keyword.operator.comparison.tryzub", "match": "==|!=|<=|>=|<|>" },
+        { "name": "keyword.operator.assignment.compound.tryzub", "match": "\\+=|-=|\\*=|/=|%=" },
+        { "name": "keyword.operator.logical.tryzub", "match": "&&|\\|\\||!" },
+        { "name": "keyword.operator.arithmetic.tryzub", "match": "[+\\-*/%]" },
+        { "name": "keyword.operator.assignment.tryzub", "match": "=" },
+        { "name": "keyword.operator.range.tryzub", "match": "\\.\\." },
+        { "name": "keyword.operator.error-propagation.tryzub", "match": "\\?" }
       ]
     }
   }
