@@ -2,6 +2,12 @@
 name = "tryzub-vm"
 version = "9.0.0"
 edition = "2021"
+description = "Virtual machine for the Tryzub programming language"
+license = "MIT"
+repository = "https://github.com/Evge14n/tryzub"
+homepage = "https://github.com/Evge14n/tryzub"
+keywords = ["tryzub", "vm", "interpreter", "programming-language"]
+categories = ["compilers"]
 
 [lib]
 path = "lib.rs"

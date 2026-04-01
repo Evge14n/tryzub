@@ -2,6 +2,12 @@
 name = "tryzub-parser"
 version = "9.0.0"
 edition = "2021"
+description = "Parser for the Tryzub programming language (Ukrainian syntax)"
+license = "MIT"
+repository = "https://github.com/Evge14n/tryzub"
+homepage = "https://github.com/Evge14n/tryzub"
+keywords = ["tryzub", "parser", "ukrainian", "programming-language"]
+categories = ["compilers", "parser-implementations"]
 
 [lib]
 path = "lib.rs"
