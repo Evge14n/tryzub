@@ -391,8 +391,10 @@ fn run_file(file: PathBuf, fast: bool, jit: bool, args: Vec<String>) -> Result<(
         let compiler2 = tryzub_vm::compiler::Compiler::new();
         let main_chunk = compiler2.compile_program(&ast);
         let mut bc_vm = tryzub_vm::bytecode::BytecodeVM::new(main_chunk.local_count.max(256));
-        for (_name, chunk) in &func_chunks {
-            bc_vm.register_function(chunk.clone());
+        for (name, chunk) in &func_chunks {
+            if name != "головна" {
+                bc_vm.register_function(chunk.clone());
+            }
         }
         bc_vm.execute(&main_chunk);
         Ok(())

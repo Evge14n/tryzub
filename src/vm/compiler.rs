@@ -30,13 +30,18 @@ impl Compiler {
     pub fn compile_program(mut self, program: &Program) -> Chunk {
         for decl in &program.declarations {
             if let Declaration::Function { name, params, .. } = decl {
-                let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
-                self.functions.push((name.clone(), param_names));
+                if name != "головна" {
+                    let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+                    self.functions.push((name.clone(), param_names));
+                }
             }
         }
 
         for decl in &program.declarations {
-            self.compile_declaration(decl);
+            match decl {
+                Declaration::Function { name, .. } if name != "головна" => {}
+                _ => self.compile_declaration(decl),
+            }
         }
         self.chunk.emit(Op::Halt, 0);
         self.chunk.local_count = self.locals.len();
@@ -48,12 +53,15 @@ impl Compiler {
         let mut func_list: Vec<(String, Vec<String>)> = Vec::new();
         for decl in &program.declarations {
             if let Declaration::Function { name, params, .. } = decl {
-                func_list.push((name.clone(), params.iter().map(|p| p.name.clone()).collect()));
+                if name != "головна" {
+                    func_list.push((name.clone(), params.iter().map(|p| p.name.clone()).collect()));
+                }
             }
         }
 
         for decl in &program.declarations {
             if let Declaration::Function { name, params, body, .. } = decl {
+                if name == "головна" { continue; }
                 let mut compiler = Compiler {
                     chunk: Chunk::new(),
                     locals: Vec::new(),
