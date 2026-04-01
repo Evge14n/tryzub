@@ -916,7 +916,14 @@ fn run_install(package: Option<String>) -> Result<()> {
 
     match package {
         Some(url) => {
-            let name = url.rsplit('/').next().unwrap_or("модуль")
+            let (git_url, version_spec) = if url.contains('@') {
+                let parts: Vec<&str> = url.splitn(2, '@').collect();
+                (parts[0].to_string(), Some(parts[1].to_string()))
+            } else {
+                (url.clone(), None)
+            };
+
+            let name = git_url.rsplit('/').next().unwrap_or("модуль")
                 .trim_end_matches(".git").to_string();
 
             let target = format!("{}/{}", modules_dir, name);
@@ -932,17 +939,29 @@ fn run_install(package: Option<String>) -> Result<()> {
             } else {
                 println!("Встановлення {}...", name);
                 let output = std::process::Command::new("git")
-                    .args(["clone", &url, &target])
+                    .args(["clone", &git_url, &target])
                     .output()?;
                 if !output.status.success() {
                     return Err(anyhow::anyhow!("git clone провалився: {}", String::from_utf8_lossy(&output.stderr)));
                 }
             }
 
-            let hash = get_git_hash(&target)?;
-            update_lock_file(&name, &url, &hash)?;
+            if let Some(ref ver) = version_spec {
+                let tag = resolve_version_tag(&target, ver)?;
+                let output = std::process::Command::new("git")
+                    .args(["checkout", &tag])
+                    .current_dir(&target)
+                    .output()?;
+                if !output.status.success() {
+                    eprintln!("Попередження: не вдалося переключитись на версію {}", ver);
+                }
+            }
 
-            println!("[OK] {} встановлено ({})", name, &hash[..8.min(hash.len())]);
+            let hash = get_git_hash(&target)?;
+            let ver_display = version_spec.as_deref().unwrap_or("latest");
+            update_lock_file(&name, &git_url, &hash)?;
+
+            println!("[OK] {} встановлено ({}, {})", name, ver_display, &hash[..8.min(hash.len())]);
         }
         None => {
             let yaml_path = "тризуб.yaml";
@@ -951,11 +970,33 @@ fn run_install(package: Option<String>) -> Result<()> {
             }
             let content = fs::read_to_string(yaml_path)?;
             let mut installed = 0;
+            let mut in_deps = false;
             for line in content.lines() {
                 let trimmed = line.trim();
+                if trimmed == "залежності:" || trimmed == "dependencies:" {
+                    in_deps = true;
+                    continue;
+                }
+                if !trimmed.starts_with('-') && !trimmed.starts_with(' ') && !trimmed.is_empty() && in_deps {
+                    in_deps = false;
+                }
+                if in_deps {
+                    let dep = trimmed.trim_start_matches('-').trim().trim_matches('"').trim_matches('\'');
+                    if dep.contains("://") || dep.ends_with(".git") || dep.contains('@') {
+                        run_install(Some(dep.to_string()))?;
+                        installed += 1;
+                    } else if !dep.is_empty() {
+                        let parts: Vec<&str> = dep.splitn(2, ':').collect();
+                        if parts.len() == 2 {
+                            let pkg_name = parts[0].trim();
+                            let pkg_ver = parts[1].trim().trim_matches('"').trim_matches('\'');
+                            println!("Пакет {}: {} (потрібен реєстр пакетів)", pkg_name, pkg_ver);
+                        }
+                    }
+                }
                 if trimmed.contains("://") || trimmed.ends_with(".git") {
                     let url = trimmed.split(':').last().unwrap_or("").trim().trim_matches('"');
-                    if !url.is_empty() {
+                    if !url.is_empty() && !in_deps {
                         run_install(Some(url.to_string()))?;
                         installed += 1;
                     }
@@ -967,6 +1008,41 @@ fn run_install(package: Option<String>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn resolve_version_tag(repo_dir: &str, version_spec: &str) -> Result<String> {
+    let output = std::process::Command::new("git")
+        .args(["tag", "-l"])
+        .current_dir(repo_dir)
+        .output()?;
+    let tags_str = String::from_utf8_lossy(&output.stdout);
+    let tags: Vec<&str> = tags_str.lines().collect();
+
+    if version_spec.starts_with(">=") {
+        let min_ver = version_spec.trim_start_matches(">=").trim();
+        let matching: Vec<&&str> = tags.iter().filter(|t| {
+            let v = t.trim_start_matches('v');
+            v >= min_ver
+        }).collect();
+        matching.last().map(|t| t.to_string()).ok_or_else(|| anyhow::anyhow!("Немає тегів >= {}", min_ver))
+    } else if version_spec.starts_with('~') {
+        let base = version_spec.trim_start_matches('~').trim();
+        let prefix = base.rsplit_once('.').map(|(p, _)| p).unwrap_or(base);
+        let matching: Vec<&&str> = tags.iter().filter(|t| {
+            let v = t.trim_start_matches('v');
+            v.starts_with(prefix)
+        }).collect();
+        matching.last().map(|t| t.to_string()).ok_or_else(|| anyhow::anyhow!("Немає тегів ~{}", base))
+    } else {
+        let exact = format!("v{}", version_spec);
+        if tags.contains(&exact.as_str()) {
+            Ok(exact)
+        } else if tags.contains(&version_spec) {
+            Ok(version_spec.to_string())
+        } else {
+            Ok(version_spec.to_string())
+        }
+    }
 }
 
 fn run_update() -> Result<()> {
