@@ -397,11 +397,19 @@ fn run_file(file: PathBuf, fast: bool, jit: bool, args: Vec<String>) -> Result<(
         bc_vm.execute(&main_chunk);
         Ok(())
     } else {
-        let mut vm = tryzub_vm::VM::new();
-        if let Some(parent) = file.parent() {
-            vm.add_module_path(parent.to_string_lossy().to_string());
-        }
-        vm.execute_program(ast, args)
+        let file_parent = file.parent().map(|p| p.to_path_buf());
+        let handle = std::thread::Builder::new()
+            .name("tryzub-vm".into())
+            .stack_size(64 * 1024 * 1024)
+            .spawn(move || {
+                let mut vm = tryzub_vm::VM::new();
+                if let Some(parent) = file_parent {
+                    vm.add_module_path(parent.to_string_lossy().to_string());
+                }
+                vm.execute_program(ast, args)
+            })
+            .map_err(|e| anyhow::anyhow!("Не вдалося створити потік: {}", e))?;
+        handle.join().unwrap_or_else(|_| Err(anyhow::anyhow!("VM паніка")))
     }
 }
 
@@ -861,8 +869,16 @@ fn extract_embedded_source() -> Option<String> {
 fn run_embedded_source(source: &str) -> Result<()> {
     let tokens = tryzub_lexer::tokenize(source)?;
     let ast = tryzub_parser::parse(tokens)?;
-    let mut vm = tryzub_vm::VM::new();
-    vm.execute_program(ast, std::env::args().skip(1).collect())
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let handle = std::thread::Builder::new()
+        .name("tryzub-vm".into())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || {
+            let mut vm = tryzub_vm::VM::new();
+            vm.execute_program(ast, args)
+        })
+        .map_err(|e| anyhow::anyhow!("Не вдалося створити потік: {}", e))?;
+    handle.join().unwrap_or_else(|_| Err(anyhow::anyhow!("VM паніка")))
 }
 
 fn run_source(source: &str) -> Result<()> {

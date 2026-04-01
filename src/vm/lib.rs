@@ -7471,8 +7471,15 @@ except Exception as e:
 }
 
 pub fn execute(program: Program, args: Vec<String>) -> Result<()> {
-    let mut vm = VM::new();
-    vm.execute_program(program, args)
+    let handle = std::thread::Builder::new()
+        .name("tryzub-vm".into())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || {
+            let mut vm = VM::new();
+            vm.execute_program(program, args)
+        })
+        .map_err(|e| anyhow::anyhow!("Не вдалося створити потік VM: {}", e))?;
+    handle.join().unwrap_or_else(|_| Err(anyhow::anyhow!("VM паніка")))
 }
 
 #[cfg(test)]
