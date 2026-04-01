@@ -44,13 +44,13 @@ jobs:
       run: brew install pkg-config
 
     - name: Збірка
-      run: cargo build --verbose -p tryzub-lexer -p tryzub-parser -p tryzub-vm
+      run: cargo build --verbose
 
     - name: Тести
-      run: cargo test --verbose -p tryzub-lexer -p tryzub-parser -p tryzub-vm
+      run: cargo test --verbose
 
     - name: Clippy
-      run: cargo clippy -p tryzub-lexer -p tryzub-parser -p tryzub-vm -- -A warnings
+      run: cargo clippy -- -A warnings
 
     - name: Форматування
       run: cargo fmt -- --check
