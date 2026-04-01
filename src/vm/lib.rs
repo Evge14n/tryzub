@@ -6544,26 +6544,84 @@ except Exception as e:
             // Inline assembly (x86_64)
             "asm_виконати" => {
                 let code = args.first().map(|v| v.to_display_string())
-                    .ok_or_else(|| anyhow::anyhow!("asm_виконати(\"mov rax, 42\\nret\")"))?;
+                    .ok_or_else(|| anyhow::anyhow!("asm_виконати(\"код\", [аргумент1, аргумент2, ...])"))?;
+
+                let input_values: Vec<i64> = args.iter().skip(1).map(|v| match v {
+                    Value::Integer(n) => *n,
+                    Value::Float(f) => f.to_bits() as i64,
+                    Value::Bool(b) => *b as i64,
+                    _ => 0,
+                }).collect();
+
                 #[cfg(target_arch = "x86_64")]
                 {
+                    let asm_code = code.replace(';', "\n");
                     let mut machine_code: Vec<u8> = Vec::new();
-                    for line in code.lines() {
+                    let mut labels: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+                    let mut label_refs: Vec<(String, usize)> = Vec::new();
+
+                    if !input_values.is_empty() {
+                        if input_values.len() >= 1 {
+                            machine_code.extend_from_slice(&[0x48, 0x89, 0xF8]); // mov rax, rdi
+                        }
+                    }
+
+                    let lines: Vec<&str> = asm_code.lines().collect();
+                    for line in &lines {
                         let line = line.trim();
                         if line.is_empty() || line.starts_with(';') || line.starts_with('#') { continue; }
+                        if line.ends_with(':') {
+                            let label = line.trim_end_matches(':').trim().to_string();
+                            labels.insert(label, machine_code.len());
+                            continue;
+                        }
                         let parts: Vec<&str> = line.splitn(2, |c: char| c == ' ' || c == '\t').collect();
                         let mnemonic = parts[0].to_lowercase();
                         let operands: Vec<&str> = if parts.len() > 1 {
                             parts[1].split(',').map(|s| s.trim()).collect()
                         } else { vec![] };
+
+                        if (mnemonic == "jmp" || mnemonic == "je" || mnemonic == "jne" || mnemonic == "jl" || mnemonic == "jg" || mnemonic == "jle" || mnemonic == "jge") && !operands.is_empty() {
+                            if operands[0].parse::<i64>().is_err() && !operands[0].starts_with("0x") {
+                                let label_name = operands[0].to_string();
+                                let opcode = match mnemonic.as_str() {
+                                    "jmp" => vec![0xE9],
+                                    "je" | "jz" => vec![0x0F, 0x84],
+                                    "jne" | "jnz" => vec![0x0F, 0x85],
+                                    "jl" => vec![0x0F, 0x8C],
+                                    "jg" => vec![0x0F, 0x8F],
+                                    "jle" => vec![0x0F, 0x8E],
+                                    "jge" => vec![0x0F, 0x8D],
+                                    _ => vec![0xE9],
+                                };
+                                machine_code.extend_from_slice(&opcode);
+                                label_refs.push((label_name, machine_code.len()));
+                                machine_code.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+                                continue;
+                            }
+                        }
+
                         Self::encode_x86(&mnemonic, &operands, &mut machine_code)?;
                     }
+
+                    for (label_name, ref_offset) in &label_refs {
+                        if let Some(&target) = labels.get(label_name) {
+                            let rel = (target as i64) - (*ref_offset as i64 + 4);
+                            let bytes = (rel as i32).to_le_bytes();
+                            machine_code[*ref_offset..*ref_offset + 4].copy_from_slice(&bytes);
+                        }
+                    }
+
                     if machine_code.is_empty() || machine_code.last() != Some(&0xC3) {
                         machine_code.push(0xC3); // ret
                     }
 
                     let jit_fn = jit::JitFunction::new(machine_code);
-                    let result = jit_fn.execute_raw();
+                    let result = if input_values.is_empty() {
+                        jit_fn.execute_raw()
+                    } else {
+                        jit_fn.execute_with_arg(input_values[0])
+                    };
                     Ok(Value::Integer(result))
                 }
                 #[cfg(not(target_arch = "x86_64"))]
