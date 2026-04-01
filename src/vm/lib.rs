@@ -693,7 +693,7 @@ impl VM {
             scope.set("Помилка".to_string(), Value::BuiltinFn("Помилка".to_string()));
 
             // Системне програмування
-            for name in &["зовнішня_бібліотека", "зовнішній_виклик", "закрити_бібліотеку",
+            for name in &["зовнішня_бібліотека", "зовнішній_виклик", "зовнішній_виклик_дрб", "закрити_бібліотеку",
                 "виділити_пам'ять", "звільнити_пам'ять",
                 "записати_байт", "прочитати_байт", "записати_слово", "прочитати_слово",
                 "копіювати_пам'ять", "заповнити_пам'ять",
@@ -6394,6 +6394,55 @@ except Exception as e:
                             Ok(Value::Integer(f(call_args[0], call_args[1], call_args[2], call_args[3], call_args[4], call_args[5])))
                         }
                         _ => Err(anyhow::anyhow!("FFI підтримує до 6 аргументів"))
+                    }
+                }
+            }
+
+            "зовнішній_виклик_дрб" => {
+                if args.len() < 2 {
+                    return Err(anyhow::anyhow!("зовнішній_виклик_дрб(бібліотека, функція, [аргументи...])"));
+                }
+                let lib_ptr = match &args[0] {
+                    Value::Integer(p) => *p as usize,
+                    _ => return Err(anyhow::anyhow!("Перший аргумент — вказівник на бібліотеку")),
+                };
+                let fn_name = args[1].to_display_string();
+                let lib = unsafe { &*(lib_ptr as *const libloading::Library) };
+                let mut c_strings: Vec<std::ffi::CString> = Vec::new();
+                let call_args: Vec<i64> = args[2..].iter().map(|v| match v {
+                    Value::Integer(n) => *n,
+                    Value::Float(f) => f.to_bits() as i64,
+                    Value::Bool(b) => *b as i64,
+                    Value::String(s) => {
+                        let cs = std::ffi::CString::new(s.as_str()).unwrap_or_default();
+                        let ptr = cs.as_ptr() as i64;
+                        c_strings.push(cs);
+                        ptr
+                    }
+                    Value::Null => 0,
+                    _ => 0,
+                }).collect();
+                unsafe {
+                    match call_args.len() {
+                        0 => {
+                            let f: libloading::Symbol<unsafe extern "C" fn() -> f64> = lib.get(fn_name.as_bytes())
+                                .map_err(|e| anyhow::anyhow!("Функція '{}' не знайдена: {}", fn_name, e))?;
+                            Ok(Value::Float(f()))
+                        }
+                        1 => {
+                            let f: libloading::Symbol<unsafe extern "C" fn(f64) -> f64> = lib.get(fn_name.as_bytes())
+                                .map_err(|e| anyhow::anyhow!("Функція '{}' не знайдена: {}", fn_name, e))?;
+                            let a = match &args[2] { Value::Float(f) => *f, Value::Integer(n) => *n as f64, _ => 0.0 };
+                            Ok(Value::Float(f(a)))
+                        }
+                        2 => {
+                            let f: libloading::Symbol<unsafe extern "C" fn(f64, f64) -> f64> = lib.get(fn_name.as_bytes())
+                                .map_err(|e| anyhow::anyhow!("Функція '{}' не знайдена: {}", fn_name, e))?;
+                            let a = match &args[2] { Value::Float(f) => *f, Value::Integer(n) => *n as f64, _ => 0.0 };
+                            let b = match &args[3] { Value::Float(f) => *f, Value::Integer(n) => *n as f64, _ => 0.0 };
+                            Ok(Value::Float(f(a, b)))
+                        }
+                        _ => Err(anyhow::anyhow!("зовнішній_виклик_дрб підтримує до 2 аргументів"))
                     }
                 }
             }
