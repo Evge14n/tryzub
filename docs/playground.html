@@ -7,20 +7,35 @@
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: -apple-system, sans-serif; background: #1e1e2e; color: #cdd6f4; min-height: 100vh; }
-header { background: #0057b7; color: white; padding: 12px 20px; display: flex; align-items: center; gap: 15px; }
+header { background: linear-gradient(135deg, #0057b7, #003d80); color: white; padding: 12px 20px; display: flex; align-items: center; gap: 15px; flex-wrap: wrap; }
 header h1 { font-size: 1.3em; }
 .flag { font-size: 1.5em; }
 main { display: grid; grid-template-columns: 1fr 1fr; height: calc(100vh - 52px); }
 .editor-panel, .output-panel { display: flex; flex-direction: column; }
-.panel-header { background: #313244; padding: 8px 15px; font-size: 0.85em; display: flex; justify-content: space-between; align-items: center; }
-textarea { flex: 1; background: #1e1e2e; color: #cdd6f4; border: none; padding: 15px; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 14px; resize: none; outline: none; tab-size: 4; }
-.output { flex: 1; background: #11111b; padding: 15px; font-family: monospace; font-size: 14px; overflow-y: auto; white-space: pre-wrap; }
+.panel-header { background: #313244; padding: 8px 15px; font-size: 0.85em; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #45475a; }
+textarea {
+    flex: 1; background: #1e1e2e; color: #cdd6f4; border: none; padding: 15px;
+    font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace; font-size: 14px;
+    resize: none; outline: none; tab-size: 4; line-height: 1.6;
+}
+textarea::selection { background: #45475a; }
+.output { flex: 1; background: #11111b; padding: 15px; font-family: monospace; font-size: 14px; overflow-y: auto; white-space: pre-wrap; line-height: 1.5; }
 .output .error { color: #f38ba8; }
 .output .success { color: #a6e3a1; }
-button { background: #ffd700; color: #1e1e2e; border: none; padding: 6px 20px; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 0.9em; }
-button:hover { background: #ffed4a; }
-.examples { display: flex; gap: 8px; }
-.examples a { color: #89b4fa; cursor: pointer; font-size: 0.8em; text-decoration: underline; }
+.output .info { color: #89b4fa; }
+.output .time { color: #f9e2af; font-size: 0.85em; }
+button { background: #ffd700; color: #1e1e2e; border: none; padding: 6px 20px; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 0.9em; transition: all 0.2s; }
+button:hover { background: #ffed4a; transform: translateY(-1px); }
+button:active { transform: translateY(0); }
+.btn-share { background: rgba(255,255,255,0.15); color: white; }
+.btn-share:hover { background: rgba(255,255,255,0.25); }
+.examples { display: flex; gap: 10px; flex-wrap: wrap; }
+.examples a { color: #89dceb; cursor: pointer; font-size: 0.85em; text-decoration: none; padding: 3px 10px; background: rgba(255,255,255,0.1); border-radius: 12px; transition: all 0.2s; }
+.examples a:hover { background: rgba(255,255,255,0.2); }
+.examples a.active { background: #ffd700; color: #1e1e2e; }
+.status { font-size: 0.8em; opacity: 0.7; }
+.spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.3); border-top: 2px solid #ffd700; border-radius: 50%; animation: spin 0.6s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 @media (max-width: 768px) { main { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; } }
 </style>
 </head>
@@ -29,48 +44,166 @@ button:hover { background: #ffed4a; }
 <span class="flag">🇺🇦</span>
 <h1>Тризуб Playground</h1>
 <div class="examples">
-<a onclick="loadExample('hello')">Привіт</a>
-<a onclick="loadExample('fibonacci')">Фібоначчі</a>
-<a onclick="loadExample('pattern')">Зіставлення</a>
+<a onclick="loadExample('hello')" id="ex-hello">Привіт</a>
+<a onclick="loadExample('fibonacci')" id="ex-fibonacci">Фібоначчі</a>
+<a onclick="loadExample('pattern')" id="ex-pattern">Зіставлення</a>
+<a onclick="loadExample('struct')" id="ex-struct">Структури</a>
+<a onclick="loadExample('async')" id="ex-async">Асинхронність</a>
 </div>
-<button onclick="runCode()">Запустити</button>
-<button onclick="shareCode()" style="background:#fff;color:#0057b7;">Поділитись</button>
+<button onclick="runCode()">▶ Запустити</button>
+<button onclick="shareCode()" class="btn-share">🔗 Поділитись</button>
+<span class="status" id="status"></span>
 </header>
 <main>
 <div class="editor-panel">
-<div class="panel-header"><span>Код</span></div>
-<textarea id="code" spellcheck="false">// Тризуб Playground
-функція факторіал(n) {
-    якщо (n <= 1) { повернути 1 }
+<div class="panel-header"><span>Код</span><span style="opacity:0.5">Ctrl+Enter — запустити</span></div>
+<textarea id="code" spellcheck="false">// Тризуб Playground — спробуйте українську мову програмування!
+
+функція факторіал(n: цл64) -> цл64 {
+    якщо n <= 1 { повернути 1 }
     повернути n * факторіал(n - 1)
 }
 
 функція головна() {
-    для (і в 1..11) {
-        друк(ціле_в_рядок(і) + "! = " + ціле_в_рядок(факторіал(і)))
+    друк("Факторіали від 1 до 10:")
+    для і від 1 до 11 {
+        друк(ф"{і}! = {факторіал(і)}")
     }
 }</textarea>
 </div>
 <div class="output-panel">
 <div class="panel-header"><span>Вивід</span><span id="time"></span></div>
-<div class="output" id="output"><span class="success">Натисніть "Запустити" або Ctrl+Enter</span></div>
+<div class="output" id="output"><span class="info">Натисніть "▶ Запустити" або Ctrl+Enter</span></div>
 </div>
 </main>
 <script>
 const examples = {
-    hello: `функція головна() {\n    друк("Привіт, Тризуб! 🇺🇦")\n    друк("Версія 8.0")\n}`,
-    fibonacci: `функція фіб(n) {\n    якщо (n <= 1) { повернути n }\n    повернути фіб(n - 1) + фіб(n - 2)\n}\n\nфункція головна() {\n    для (і в 0..15) {\n        друк(фіб(і))\n    }\n}`,
-    pattern: `структура Точка {\n    х: ціле,\n    у: ціле\n}\n\nфункція відстань(т) {\n    повернути корінь(т.х * т.х + т.у * т.у)\n}\n\nфункція головна() {\n    змінна п = Точка { х: 3, у: 4 }\n    друк("Відстань: ")\n    друк(відстань(п))\n}`
+    hello: `// Привіт, Тризуб!
+функція головна() {
+    друк("Привіт, світ! 🇺🇦")
+    друк("Ласкаво просимо до мови Тризуб!")
+
+    змінна ім_я = "Тризуб"
+    змінна версія = 9
+    друк(ф"Мова: {ім_я}, версія: {версія}")
+}`,
+    fibonacci: `// Числа Фібоначчі
+функція фіб(n: цл64) -> цл64 {
+    якщо n <= 1 { повернути n }
+    повернути фіб(n - 1) + фіб(n - 2)
+}
+
+функція головна() {
+    друк("Числа Фібоначчі:")
+    для і від 0 до 15 {
+        друк(ф"фіб({і}) = {фіб(і)}")
+    }
+}`,
+    pattern: `// Зіставлення зразків (Pattern Matching)
+перелік Фігура {
+    Коло(дрб64),
+    Прямокутник(дрб64, дрб64),
+    Трикутник(дрб64, дрб64)
+}
+
+функція площа(фігура: Фігура) -> дрб64 {
+    зіставити фігура {
+        Коло(р) => 3.14159 * р * р,
+        Прямокутник(ш, в) => ш * в,
+        Трикутник(о, в) => о * в / 2.0
+    }
+}
+
+функція головна() {
+    змінна к = Фігура::Коло(5.0)
+    змінна п = Фігура::Прямокутник(4.0, 6.0)
+    друк(ф"Площа кола: {площа(к)}")
+    друк(ф"Площа прямокутника: {площа(п)}")
+}`,
+    struct: `// Структури та методи
+структура Точка {
+    х: дрб64,
+    у: дрб64
+}
+
+реалізація Точка {
+    функція відстань(себе) -> дрб64 {
+        повернути корінь(себе.х * себе.х + себе.у * себе.у)
+    }
+
+    функція друк_точку(себе) {
+        друк(ф"({себе.х}, {себе.у})")
+    }
+}
+
+функція головна() {
+    змінна п = Точка { х: 3.0, у: 4.0 }
+    п.друк_точку()
+    друк(ф"Відстань: {п.відстань()}")
+}`,
+    async: `// Асинхронне програмування
+асинхронна функція завантажити(url: тхт) -> тхт {
+    друк(ф"Завантажую: {url}")
+    повернути ф"Дані з {url}"
+}
+
+функція головна() {
+    друк("Паралельне завантаження:")
+    змінна р1 = завантажити("https://api.example.com/1")
+    змінна р2 = завантажити("https://api.example.com/2")
+    друк(р1)
+    друк(р2)
+}`
 };
+
+let currentExample = null;
 
 function loadExample(name) {
     document.getElementById('code').value = examples[name] || '';
+    document.querySelectorAll('.examples a').forEach(a => a.classList.remove('active'));
+    const el = document.getElementById('ex-' + name);
+    if (el) el.classList.add('active');
+    currentExample = name;
 }
 
-function runCode() {
+async function runCode() {
     const output = document.getElementById('output');
+    const timeEl = document.getElementById('time');
     const code = document.getElementById('code').value;
-    output.innerHTML = '<span class="success">Виконання...</span>\n\nДля запуску коду встановіть Тризуб:\n  git clone https://github.com/Evge14n/tryzub\n  cd tryzub && cargo install --path .\n  echo \'' + code.split('\n')[0] + '...\' > prog.тризуб\n  тризуб запустити prog.тризуб';
+    const statusEl = document.getElementById('status');
+
+    output.innerHTML = '<span class="info"><span class="spinner"></span> Виконання...</span>';
+    timeEl.textContent = '';
+    statusEl.innerHTML = '<span class="spinner"></span>';
+
+    const start = performance.now();
+
+    try {
+        const response = await fetch('/api/run', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code: code }),
+            signal: AbortSignal.timeout(5000)
+        });
+
+        const result = await response.json();
+        const elapsed = (performance.now() - start).toFixed(1);
+        timeEl.innerHTML = `<span class="time">⏱ ${elapsed}мс</span>`;
+        statusEl.textContent = '';
+
+        if (result.error) {
+            output.innerHTML = `<span class="error">✗ ${escapeHtml(result.error)}</span>`;
+        } else {
+            output.innerHTML = `<span class="success">${escapeHtml(result.output || '(порожній вивід)')}</span>`;
+        }
+    } catch(e) {
+        const elapsed = (performance.now() - start).toFixed(1);
+        timeEl.innerHTML = `<span class="time">⏱ ${elapsed}мс</span>`;
+        statusEl.textContent = '';
+
+        output.innerHTML = `<span class="info">Для запуску коду на сервері:\n\n  1. Встановіть Тризуб:\n     git clone https://github.com/Evge14n/tryzub\n     cd tryzub && cargo install --path .\n\n  2. Запустіть playground сервер:\n     тризуб веб плейграунд\n\n  Або збережіть код і запустіть локально:\n     тризуб запустити файл.тризуб</span>`;
+    }
+
     window.location.hash = btoa(unescape(encodeURIComponent(code)));
 }
 
@@ -78,9 +211,13 @@ function shareCode() {
     const code = document.getElementById('code').value;
     window.location.hash = btoa(unescape(encodeURIComponent(code)));
     navigator.clipboard.writeText(window.location.href).then(() => {
-        document.getElementById('time').textContent = 'Посилання скопійовано!';
-        setTimeout(() => { document.getElementById('time').textContent = ''; }, 2000);
+        document.getElementById('status').textContent = '✓ Посилання скопійовано!';
+        setTimeout(() => { document.getElementById('status').textContent = ''; }, 2000);
     });
+}
+
+function escapeHtml(text) {
+    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 if (window.location.hash.length > 1) {

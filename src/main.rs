@@ -184,6 +184,13 @@ enum WebCommands {
         #[arg(short, long, default_value = "3000")]
         port: u16,
     },
+
+    /// Запустити Playground сервер
+    #[command(name = "плейграунд")]
+    Playground {
+        #[arg(short, long, default_value = "8080")]
+        port: u16,
+    },
 }
 
 fn main() {
@@ -215,6 +222,7 @@ fn main() {
         Commands::Web { action } => match action {
             WebCommands::New { name } => create_web_project(name),
             WebCommands::Run { file, port } => run_file(file, false, false, vec![port.to_string()]),
+            WebCommands::Playground { port } => run_playground(port),
         },
         Commands::Benchmark { iterations } => {
             println!("\nТризуб VM — Бенчмарк швидкості\n");
@@ -1105,6 +1113,128 @@ fn update_lock_file(name: &str, url: &str, hash: &str) -> Result<()> {
 
     fs::write(lock_path, content)?;
     Ok(())
+}
+
+fn run_playground(port: u16) -> Result<()> {
+    use std::io::{Read as _, Write as _};
+
+    let playground_html = include_str!("../docs/playground.html");
+
+    let listener = std::net::TcpListener::bind(format!("0.0.0.0:{}", port))?;
+    println!("🔱 Тризуб Playground запущено: http://localhost:{}", port);
+    println!("   Ctrl+C для зупинки\n");
+
+    for stream in listener.incoming() {
+        let mut stream = match stream { Ok(s) => s, Err(_) => continue };
+        let mut buf = [0u8; 8192];
+        let n = stream.read(&mut buf).unwrap_or(0);
+        let request = String::from_utf8_lossy(&buf[..n]);
+
+        if request.starts_with("POST /api/run") {
+            let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+            let code = if let Ok(json) = serde_json::from_str::<serde_json::Value>(body) {
+                json.get("code").and_then(|c| c.as_str()).unwrap_or("").to_string()
+            } else {
+                body.to_string()
+            };
+
+            let result = std::panic::catch_unwind(|| {
+                let start = std::time::Instant::now();
+                let output = execute_code_sandboxed(&code, std::time::Duration::from_secs(5));
+                let elapsed = start.elapsed();
+                (output, elapsed)
+            });
+
+            let response_json = match result {
+                Ok((Ok(output), elapsed)) => {
+                    serde_json::json!({ "output": output, "time_ms": elapsed.as_millis() })
+                }
+                Ok((Err(e), _)) => {
+                    serde_json::json!({ "error": e })
+                }
+                Err(_) => {
+                    serde_json::json!({ "error": "Виконання зупинено (паніка)" })
+                }
+            };
+
+            let body = serde_json::to_string(&response_json).unwrap_or_default();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(), body
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        } else if request.starts_with("OPTIONS") {
+            let resp = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\n\r\n";
+            let _ = stream.write_all(resp.as_bytes());
+        } else {
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\n\r\n{}",
+                playground_html.len(), playground_html
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    }
+    Ok(())
+}
+
+fn execute_code_sandboxed(code: &str, timeout: std::time::Duration) -> std::result::Result<String, String> {
+    let temp_dir = std::env::temp_dir();
+    let temp_file = temp_dir.join("тризуб_playground.тризуб");
+    std::fs::write(&temp_file, code).map_err(|e| format!("Не вдалося створити тимчасовий файл: {}", e))?;
+
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("tryzub"));
+    let child = std::process::Command::new(&exe)
+        .arg("запустити")
+        .arg(&temp_file)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+
+    match child {
+        Ok(mut child) => {
+            let start = std::time::Instant::now();
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        let stdout = child.stdout.take().map(|mut s| {
+                            let mut out = String::new();
+                            std::io::Read::read_to_string(&mut s, &mut out).ok();
+                            out
+                        }).unwrap_or_default();
+                        let stderr = child.stderr.take().map(|mut s| {
+                            let mut out = String::new();
+                            std::io::Read::read_to_string(&mut s, &mut out).ok();
+                            out
+                        }).unwrap_or_default();
+                        let _ = std::fs::remove_file(&temp_file);
+
+                        if status.success() {
+                            return Ok(stdout);
+                        } else {
+                            let msg = if stderr.is_empty() { stdout } else { stderr };
+                            return Err(msg);
+                        }
+                    }
+                    Ok(None) => {
+                        if start.elapsed() > timeout {
+                            let _ = child.kill();
+                            let _ = std::fs::remove_file(&temp_file);
+                            return Err("Час виконання вичерпано (5 секунд)".into());
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    Err(e) => {
+                        let _ = std::fs::remove_file(&temp_file);
+                        return Err(format!("Помилка: {}", e));
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&temp_file);
+            Err(format!("Не вдалося запустити: {}", e))
+        }
+    }
 }
 
 fn create_web_project(name: String) -> Result<()> {
