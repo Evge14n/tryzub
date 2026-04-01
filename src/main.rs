@@ -1255,6 +1255,15 @@ fn run_lsp() -> Result<()> {
                             lsp_send(&mut stdout, &serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": hover }))?;
                         }
 
+                        "textDocument/definition" => {
+                            let uri = params.pointer("/textDocument/uri").and_then(|v| v.as_str()).unwrap_or("");
+                            let line = params.pointer("/position/line").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                            let col = params.pointer("/position/character").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                            let source = documents.get(uri).cloned().unwrap_or_default();
+                            let def = lsp_definition(&source, uri, line, col);
+                            lsp_send(&mut stdout, &serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": def }))?;
+                        }
+
                         _ => {
                             if id.is_some() {
                                 lsp_send(&mut stdout, &serde_json::json!({
@@ -1368,33 +1377,85 @@ fn lsp_hover(source: &str, line: usize, col: usize) -> serde_json::Value {
     if let Ok(tokens) = tryzub_lexer::tokenize(source) {
         if let Ok(program) = tryzub_parser::parse(tokens) {
             for decl in &program.declarations {
-                if let tryzub_parser::Declaration::Function { name, params, return_type, .. } = decl {
-                    if name == &word {
+                match decl {
+                    tryzub_parser::Declaration::Function { name, params, return_type, is_async, .. } if name == &word => {
+                        let prefix = if *is_async { "асинхронна функція" } else { "функція" };
                         let params_str: Vec<String> = params.iter().map(|p| {
-                            if p.default.is_some() { format!("{} = ...", p.name) }
-                            else { p.name.clone() }
+                            format!("{}: {}", p.name, type_to_string(&p.ty))
                         }).collect();
-                        let ret = match return_type {
-                            Some(ty) => format!(" -> {:?}", ty),
-                            None => String::new(),
-                        };
+                        let ret = return_type.as_ref().map(|t| format!(" -> {}", type_to_string(t))).unwrap_or_default();
                         return serde_json::json!({
-                            "contents": { "kind": "markdown", "value": format!("```тризуб\nфункція {}({}){}\n```", name, params_str.join(", "), ret) }
+                            "contents": { "kind": "markdown", "value": format!("```тризуб\n{} {}({}){}\n```", prefix, name, params_str.join(", "), ret) }
                         });
                     }
-                }
-                if let tryzub_parser::Declaration::Struct { name, fields, .. } = decl {
-                    if name == &word {
-                        let f: Vec<String> = fields.iter().map(|f| f.name.clone()).collect();
+                    tryzub_parser::Declaration::Struct { name, fields, .. } if name == &word => {
+                        let f: Vec<String> = fields.iter().map(|f| format!("{}: {}", f.name, type_to_string(&f.ty))).collect();
                         return serde_json::json!({
-                            "contents": { "kind": "markdown", "value": format!("```тризуб\nструктура {} {{ {} }}\n```", name, f.join(", ")) }
+                            "contents": { "kind": "markdown", "value": format!("```тризуб\nструктура {} {{\n  {}\n}}\n```", name, f.join(",\n  ")) }
                         });
                     }
+                    tryzub_parser::Declaration::Trait { name, methods, .. } if name == &word => {
+                        let m: Vec<String> = methods.iter().map(|m| {
+                            let p = m.params.iter().filter(|p| p.name != "себе").map(|p| format!("{}: {}", p.name, type_to_string(&p.ty))).collect::<Vec<_>>().join(", ");
+                            let r = m.return_type.as_ref().map(|t| format!(" -> {}", type_to_string(t))).unwrap_or_default();
+                            format!("  {}({}){}", m.name, p, r)
+                        }).collect();
+                        return serde_json::json!({
+                            "contents": { "kind": "markdown", "value": format!("```тризуб\nтрейт {} {{\n{}\n}}\n```", name, m.join("\n")) }
+                        });
+                    }
+                    tryzub_parser::Declaration::Enum { name, variants, .. } if name == &word => {
+                        let v: Vec<String> = variants.iter().map(|v| {
+                            if v.fields.is_empty() { format!("  {}", v.name) }
+                            else {
+                                let fields = v.fields.iter().map(|f| {
+                                    if let Some(ref n) = f.name { format!("{}: {}", n, type_to_string(&f.ty)) }
+                                    else { type_to_string(&f.ty) }
+                                }).collect::<Vec<_>>().join(", ");
+                                format!("  {}({})", v.name, fields)
+                            }
+                        }).collect();
+                        return serde_json::json!({
+                            "contents": { "kind": "markdown", "value": format!("```тризуб\nперелік {} {{\n{}\n}}\n```", name, v.join("\n")) }
+                        });
+                    }
+                    _ => {}
                 }
             }
         }
     }
     serde_json::json!({ "contents": format!("**{}**", word) })
+}
+
+fn lsp_definition(source: &str, uri: &str, line: usize, col: usize) -> serde_json::Value {
+    let target_line = source.lines().nth(line).unwrap_or("");
+    let word = extract_word_at(target_line, col);
+    if word.is_empty() { return serde_json::Value::Null; }
+
+    for (i, src_line) in source.lines().enumerate() {
+        let trimmed = src_line.trim();
+        let is_def = trimmed.contains(&format!("функція {}(", word))
+            || trimmed.contains(&format!("функція {} (", word))
+            || trimmed.contains(&format!("структура {} ", word))
+            || trimmed.contains(&format!("структура {}{{", word))
+            || trimmed.contains(&format!("трейт {} ", word))
+            || trimmed.contains(&format!("трейт {}{{", word))
+            || trimmed.contains(&format!("перелік {} ", word))
+            || trimmed.contains(&format!("перелік {}{{", word))
+            || trimmed.starts_with(&format!("змінна {} ", word))
+            || trimmed.starts_with(&format!("змінна {}=", word));
+        if is_def && i != line {
+            let char_pos = src_line.find(&word).unwrap_or(0);
+            return serde_json::json!({
+                "uri": uri,
+                "range": {
+                    "start": { "line": i, "character": char_pos },
+                    "end": { "line": i, "character": char_pos + word.len() }
+                }
+            });
+        }
+    }
+    serde_json::Value::Null
 }
 
 fn extract_word_at(line: &str, col: usize) -> String {
