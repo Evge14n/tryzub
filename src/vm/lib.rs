@@ -1559,6 +1559,11 @@ impl VM {
                     }
                 }
 
+                if self.call_stack.len() > 10000 {
+                    return Err(anyhow::anyhow!(
+                        "Переповнення стеку викликів (глибина > 10000). Перевірте рекурсію у функції '{}'", func_name
+                    ));
+                }
                 self.call_stack.push(CallFrame {
                     function_name: func_name.clone(),
                     file: String::new(),
