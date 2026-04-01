@@ -21,7 +21,8 @@ members = [
 
 [features]
 default = []
-llvm = ["dep:tryzub-compiler", "dep:tryzub-runtime", "dep:inkwell", "dep:cranelift", "dep:cranelift-module", "dep:cranelift-jit", "dep:cranelift-native", "dep:target-lexicon"]
+llvm = ["dep:tryzub-compiler", "dep:tryzub-runtime", "dep:inkwell"]
+cranelift-backend = ["dep:cranelift", "dep:cranelift-module", "dep:cranelift-jit", "dep:cranelift-native", "dep:target-lexicon"]
 
 [dependencies]
 clap = { version = "4.0", features = ["derive"] }

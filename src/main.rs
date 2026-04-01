@@ -8,6 +8,9 @@ use anyhow::Result;
 use std::path::PathBuf;
 use std::fs;
 
+#[cfg(feature = "cranelift-backend")]
+mod cranelift_backend;
+
 #[derive(Parser)]
 #[command(name = "tryzub")]
 #[command(author = "******* <*******>")]
@@ -34,6 +37,10 @@ enum Commands {
         /// JIT компіляція в машинний код x86_64
         #[arg(long = "jit", default_value = "false")]
         jit: bool,
+
+        /// Cranelift нативна компіляція
+        #[arg(long = "нативно", default_value = "false")]
+        cranelift: bool,
 
         /// Аргументи програми
         #[arg(trailing_var_arg = true)]
@@ -212,7 +219,7 @@ fn main() {
         Commands::Doc { path, output } => run_doc(path, output),
         Commands::Install { package } => run_install(package),
         Commands::Update => run_update(),
-        Commands::Run { file, fast, jit, args } => run_file(file, fast, jit, args),
+        Commands::Run { file, fast, jit, cranelift, args } => run_file(file, fast, jit, cranelift, args),
         Commands::Watch { file } => watch_file(file),
         Commands::Compile { file, output, native, kernel } => compile_file(file, output, native, kernel),
         Commands::Check { file } => check_file(file),
@@ -221,7 +228,7 @@ fn main() {
         Commands::Repl => run_repl(),
         Commands::Web { action } => match action {
             WebCommands::New { name } => create_web_project(name),
-            WebCommands::Run { file, port } => run_file(file, false, false, vec![port.to_string()]),
+            WebCommands::Run { file, port } => run_file(file, false, false, false, vec![port.to_string()]),
             WebCommands::Playground { port } => run_playground(port),
         },
         Commands::Benchmark { iterations } => {
@@ -335,7 +342,7 @@ fn profile_file(file: PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn run_file(file: PathBuf, fast: bool, jit: bool, args: Vec<String>) -> Result<()> {
+fn run_file(file: PathBuf, fast: bool, jit: bool, cranelift: bool, args: Vec<String>) -> Result<()> {
     let source = fs::read_to_string(&file)
         .map_err(|e| anyhow::anyhow!("Не вдалося прочитати файл {:?}: {}", file, e))?;
 
@@ -365,6 +372,20 @@ fn run_file(file: PathBuf, fast: bool, jit: bool, args: Vec<String>) -> Result<(
             std::process::exit(1);
         }
     };
+
+    if cranelift {
+        #[cfg(feature = "cranelift-backend")]
+        {
+            let start = std::time::Instant::now();
+            let compiler = cranelift_backend::CraneliftCompiler::new();
+            compiler.compile_and_run(&ast)?;
+            let elapsed = start.elapsed();
+            eprintln!("  [Cranelift] {:.3}мс", elapsed.as_secs_f64() * 1000.0);
+            return Ok(());
+        }
+        #[cfg(not(feature = "cranelift-backend"))]
+        return Err(anyhow::anyhow!("Cranelift backend не ввімкнено. Зберіть з: cargo build --features cranelift-backend"));
+    }
 
     if jit {
         #[cfg(target_arch = "x86_64")]
@@ -503,7 +524,7 @@ fn watch_file(file: PathBuf) -> Result<()> {
     loop {
         println!("\x1b[33m▶ Запуск...\x1b[0m");
         let start = std::time::Instant::now();
-        match run_file(run_target.clone(), false, false, vec![]) {
+        match run_file(run_target.clone(), false, false, false, vec![]) {
             Ok(_) => {
                 let elapsed = start.elapsed();
                 println!("\x1b[32m✓ Виконано за {:.1}мс\x1b[0m", elapsed.as_secs_f64() * 1000.0);
