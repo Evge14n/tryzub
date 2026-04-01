@@ -370,9 +370,11 @@ fn run_file(file: PathBuf, fast: bool, jit: bool, args: Vec<String>) -> Result<(
         #[cfg(target_arch = "x86_64")]
         {
             let compiler = tryzub_vm::compiler::Compiler::new();
-            let chunk = compiler.compile_program(&ast);
+            let _func_chunks = compiler.compile_functions(&ast);
+            let compiler2 = tryzub_vm::compiler::Compiler::new();
+            let main_chunk = compiler2.compile_program(&ast);
             let jit_compiler = tryzub_vm::jit::JitCompiler::new();
-            let jit_fn = jit_compiler.compile(&chunk);
+            let jit_fn = jit_compiler.compile(&main_chunk);
             let start = std::time::Instant::now();
             let result = jit_fn.execute();
             let elapsed = start.elapsed();
@@ -385,9 +387,14 @@ fn run_file(file: PathBuf, fast: bool, jit: bool, args: Vec<String>) -> Result<(
         return Err(anyhow::anyhow!("JIT доступний тільки на x86_64"));
     } else if fast {
         let compiler = tryzub_vm::compiler::Compiler::new();
-        let chunk = compiler.compile_program(&ast);
-        let mut bc_vm = tryzub_vm::bytecode::BytecodeVM::new(chunk.local_count);
-        bc_vm.execute(&chunk);
+        let func_chunks = compiler.compile_functions(&ast);
+        let compiler2 = tryzub_vm::compiler::Compiler::new();
+        let main_chunk = compiler2.compile_program(&ast);
+        let mut bc_vm = tryzub_vm::bytecode::BytecodeVM::new(main_chunk.local_count.max(256));
+        for (_name, chunk) in &func_chunks {
+            bc_vm.register_function(chunk.clone());
+        }
+        bc_vm.execute(&main_chunk);
         Ok(())
     } else {
         let mut vm = tryzub_vm::VM::new();

@@ -60,6 +60,7 @@ pub struct Chunk {
     pub constants: Vec<BcValue>,
     pub local_count: usize,
     pub arg_count: usize,
+    pub func_starts: std::collections::HashMap<String, usize>,
 }
 
 impl Default for Chunk {
@@ -68,7 +69,7 @@ impl Default for Chunk {
 
 impl Chunk {
     pub fn new() -> Self {
-        Self { code: Vec::new(), constants: Vec::new(), local_count: 0, arg_count: 0 }
+        Self { code: Vec::new(), constants: Vec::new(), local_count: 0, arg_count: 0, func_starts: std::collections::HashMap::new() }
     }
     pub fn emit(&mut self, op: Op, arg: u32) -> usize {
         let idx = self.code.len();

@@ -8,6 +8,7 @@ pub struct Compiler {
     chunk: Chunk,
     locals: Vec<String>,
     scope_depth: usize,
+    functions: Vec<(String, Vec<String>)>,
 }
 
 impl Default for Compiler {
@@ -22,16 +23,58 @@ impl Compiler {
             chunk: Chunk::new(),
             locals: Vec::new(),
             scope_depth: 0,
+            functions: Vec::new(),
         }
     }
 
     pub fn compile_program(mut self, program: &Program) -> Chunk {
+        for decl in &program.declarations {
+            if let Declaration::Function { name, params, .. } = decl {
+                let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+                self.functions.push((name.clone(), param_names));
+            }
+        }
+
         for decl in &program.declarations {
             self.compile_declaration(decl);
         }
         self.chunk.emit(Op::Halt, 0);
         self.chunk.local_count = self.locals.len();
         self.chunk
+    }
+
+    pub fn compile_functions(&self, program: &Program) -> Vec<(String, Chunk)> {
+        let mut results = Vec::new();
+        let mut func_list: Vec<(String, Vec<String>)> = Vec::new();
+        for decl in &program.declarations {
+            if let Declaration::Function { name, params, .. } = decl {
+                func_list.push((name.clone(), params.iter().map(|p| p.name.clone()).collect()));
+            }
+        }
+
+        for decl in &program.declarations {
+            if let Declaration::Function { name, params, body, .. } = decl {
+                let mut compiler = Compiler {
+                    chunk: Chunk::new(),
+                    locals: Vec::new(),
+                    scope_depth: 0,
+                    functions: func_list.clone(),
+                };
+                compiler.chunk.arg_count = params.len();
+                for p in params {
+                    compiler.add_local(p.name.clone());
+                }
+                for stmt in body {
+                    compiler.compile_statement(stmt);
+                }
+                let c = compiler.chunk.add_constant(BcValue::Int(0));
+                compiler.chunk.emit(Op::Const, c);
+                compiler.chunk.emit(Op::Return, 0);
+                compiler.chunk.local_count = compiler.locals.len();
+                results.push((name.clone(), compiler.chunk));
+            }
+        }
+        results
     }
 
     fn compile_declaration(&mut self, decl: &Declaration) {
@@ -47,7 +90,6 @@ impl Compiler {
                 self.chunk.emit(Op::StoreLocal, slot as u32);
             }
             Declaration::Function { name: _, params: _, body, .. } => {
-                // Inline компіляція тіла функції
                 for stmt in body {
                     self.compile_statement(stmt);
                 }
@@ -237,6 +279,14 @@ impl Compiler {
                         self.chunk.emit(Op::Print, 0);
                         let c = self.chunk.add_constant(BcValue::Null);
                         self.chunk.emit(Op::Const, c);
+                        return;
+                    }
+                    let func_idx = self.functions.iter().position(|(n, _)| n == name);
+                    if let Some(idx) = func_idx {
+                        for arg in args {
+                            self.compile_expression(arg);
+                        }
+                        self.chunk.emit(Op::Call, idx as u32);
                         return;
                     }
                 }
