@@ -265,6 +265,36 @@ impl JitCompiler {
                     self.emit(&[0x88, 0x03]); // mov [rbx], al
                     self.emit(&[0xC6, 0x43, 0x01, 0x0F]); // mov [rbx+1], 0x0F (white on black)
                 }
+                Op::Div => {
+                    self.emit(&[0x59, 0x58]); // pop rcx, pop rax
+                    self.emit(&[0x48, 0x99]); // cqo (sign extend rax to rdx:rax)
+                    self.emit(&[0x48, 0xF7, 0xF9]); // idiv rcx
+                    self.emit(&[0x50]); // push rax
+                }
+                Op::Mod => {
+                    self.emit(&[0x59, 0x58]); // pop rcx, pop rax
+                    self.emit(&[0x48, 0x99]); // cqo
+                    self.emit(&[0x48, 0xF7, 0xF9]); // idiv rcx
+                    self.emit(&[0x52]); // push rdx (remainder)
+                }
+                Op::Neg => {
+                    self.emit(&[0x58]); // pop rax
+                    self.emit(&[0x48, 0xF7, 0xD8]); // neg rax
+                    self.emit(&[0x50]); // push rax
+                }
+                Op::Ne => { self.emit_cmp(0x95); }
+                Op::Ge => { self.emit_cmp(0x9D); }
+                Op::Jump => {
+                    self.emit(&[0xE9]);
+                    self.jump_patches.push((self.code.len(), inst.arg as usize));
+                    self.emit_u32(0);
+                }
+                Op::Return => {
+                    self.emit(&[0x58]); // pop rax (return value)
+                    self.emit(&[0x48, 0x81, 0xC4]); // add rsp, aligned
+                    self.emit_u32(aligned);
+                    self.emit(&[0xC3]); // ret
+                }
                 Op::Halt => {
                     self.emit(&[0xF4]); // hlt
                 }
