@@ -24,6 +24,11 @@ impl CraneliftCompiler {
         builder.symbol("__tryzub_print", tryzub_print_i64 as *const u8);
         builder.symbol("__tryzub_print_f64", tryzub_print_f64 as *const u8);
         builder.symbol("__tryzub_print_str", tryzub_print_str as *const u8);
+        builder.symbol("__tryzub_concat", tryzub_concat as *const u8);
+        builder.symbol("__tryzub_array_new", tryzub_array_new as *const u8);
+        builder.symbol("__tryzub_array_get", tryzub_array_get as *const u8);
+        builder.symbol("__tryzub_array_push", tryzub_array_push as *const u8);
+        builder.symbol("__tryzub_array_len", tryzub_array_len as *const u8);
         let module = JITModule::new(builder);
         Self {
             builder_ctx: FunctionBuilderContext::new(),
@@ -79,6 +84,54 @@ impl CraneliftCompiler {
         };
         let print_str_id = self.module.declare_function("__tryzub_print_str", Linkage::Import, &print_str_sig)?;
         self.functions.insert("__друк_рядок".to_string(), print_str_id);
+
+        let concat_sig = {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            sig
+        };
+        let concat_id = self.module.declare_function("__tryzub_concat", Linkage::Import, &concat_sig)?;
+        self.functions.insert("__concat".to_string(), concat_id);
+
+        let arr_new_sig = {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            sig
+        };
+        let arr_new_id = self.module.declare_function("__tryzub_array_new", Linkage::Import, &arr_new_sig)?;
+        self.functions.insert("__array_new".to_string(), arr_new_id);
+
+        let arr_push_sig = {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            sig
+        };
+        let arr_push_id = self.module.declare_function("__tryzub_array_push", Linkage::Import, &arr_push_sig)?;
+        self.functions.insert("__array_push".to_string(), arr_push_id);
+
+        let arr_get_sig = {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            sig
+        };
+        let arr_get_id = self.module.declare_function("__tryzub_array_get", Linkage::Import, &arr_get_sig)?;
+        self.functions.insert("__array_get".to_string(), arr_get_id);
+
+        let arr_len_sig = {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            sig
+        };
+        let arr_len_id = self.module.declare_function("__tryzub_array_len", Linkage::Import, &arr_len_sig)?;
+        self.functions.insert("__array_len".to_string(), arr_len_id);
 
         for (name, params, body) in &func_decls {
             self.compile_function(name, params, body)?;
@@ -231,6 +284,14 @@ impl<'a, 'b> FuncTranslator<'a, 'b> {
             Expression::Binary { left, op, right } => {
                 let (lhs, lty) = self.translate_expr_typed(left);
                 let (rhs, rty) = self.translate_expr_typed(right);
+                if (lty == CrType::Str || rty == CrType::Str) && matches!(op, BinaryOp::Add) {
+                    if let Some(concat_id) = self.functions.get("__concat") {
+                        let callee = self.module.declare_func_in_func(*concat_id, self.builder.func);
+                        let call = self.builder.ins().call(callee, &[lhs, rhs]);
+                        return (self.builder.inst_results(call)[0], CrType::Str);
+                    }
+                    return (lhs, CrType::Str);
+                }
                 if lty == CrType::F64 || rty == CrType::F64 {
                     let fl = if lty == CrType::I64 { self.builder.ins().fcvt_from_sint(types::F64, lhs) } else { lhs };
                     let fr = if rty == CrType::I64 { self.builder.ins().fcvt_from_sint(types::F64, rhs) } else { rhs };
@@ -309,6 +370,26 @@ impl<'a, 'b> FuncTranslator<'a, 'b> {
                     }
                 }
                 (self.builder.ins().iconst(types::I64, 0), CrType::I64)
+            }
+            Expression::Array(elements) => {
+                let cap = self.builder.ins().iconst(types::I64, elements.len() as i64);
+                let arr = self.call_runtime("__array_new", &[cap]);
+                for elem in elements {
+                    let val = self.translate_expr(elem);
+                    self.call_runtime("__array_push", &[arr, val]);
+                }
+                (arr, CrType::I64)
+            }
+            Expression::Index { object, index } => {
+                let arr = self.translate_expr(object);
+                let idx = self.translate_expr(index);
+                let val = self.call_runtime("__array_get", &[arr, idx]);
+                (val, CrType::I64)
+            }
+            Expression::MethodCall { object, method, args: _ } if method == "довжина" => {
+                let arr = self.translate_expr(object);
+                let len = self.call_runtime("__array_len", &[arr]);
+                (len, CrType::I64)
             }
             _ => (self.builder.ins().iconst(types::I64, 0), CrType::I64),
         }
@@ -505,6 +586,16 @@ impl<'a, 'b> FuncTranslator<'a, 'b> {
     fn translate_expr(&mut self, expr: &Expression) -> Value {
         self.translate_expr_typed(expr).0
     }
+
+    fn call_runtime(&mut self, name: &str, args: &[Value]) -> Value {
+        if let Some(fid) = self.functions.get(name) {
+            let callee = self.module.declare_func_in_func(*fid, self.builder.func);
+            let call = self.builder.ins().call(callee, args);
+            self.builder.inst_results(call)[0]
+        } else {
+            self.builder.ins().iconst(types::I64, 0)
+        }
+    }
 }
 
 extern "C" fn tryzub_print_i64(val: i64) -> i64 {
@@ -529,4 +620,46 @@ extern "C" fn tryzub_print_str(ptr: i64, _len: i64) -> i64 {
         }
     }
     0
+}
+
+extern "C" fn tryzub_concat(a_ptr: i64, b_ptr: i64) -> i64 {
+    let a = if a_ptr != 0 {
+        unsafe { std::ffi::CStr::from_ptr(a_ptr as *const std::ffi::c_char) }.to_str().unwrap_or("")
+    } else { "" };
+    let b = if b_ptr != 0 {
+        unsafe { std::ffi::CStr::from_ptr(b_ptr as *const std::ffi::c_char) }.to_str().unwrap_or("")
+    } else { "" };
+    let combined = format!("{}{}", a, b);
+    let cstr = std::ffi::CString::new(combined).unwrap_or_default();
+    cstr.into_raw() as i64
+}
+
+#[repr(C)]
+struct TryzubArray {
+    data: Vec<i64>,
+}
+
+extern "C" fn tryzub_array_new(cap: i64) -> i64 {
+    let arr = Box::new(TryzubArray { data: Vec::with_capacity(cap as usize) });
+    Box::into_raw(arr) as i64
+}
+
+extern "C" fn tryzub_array_push(arr_ptr: i64, val: i64) -> i64 {
+    if arr_ptr == 0 { return 0; }
+    let arr = unsafe { &mut *(arr_ptr as *mut TryzubArray) };
+    arr.data.push(val);
+    arr_ptr
+}
+
+extern "C" fn tryzub_array_get(arr_ptr: i64, idx: i64) -> i64 {
+    if arr_ptr == 0 { return 0; }
+    let arr = unsafe { &*(arr_ptr as *const TryzubArray) };
+    let i = idx as usize;
+    if i < arr.data.len() { arr.data[i] } else { 0 }
+}
+
+extern "C" fn tryzub_array_len(arr_ptr: i64) -> i64 {
+    if arr_ptr == 0 { return 0; }
+    let arr = unsafe { &*(arr_ptr as *const TryzubArray) };
+    arr.data.len() as i64
 }
