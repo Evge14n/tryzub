@@ -29,6 +29,12 @@ impl CraneliftCompiler {
         builder.symbol("__tryzub_array_get", tryzub_array_get as *const u8);
         builder.symbol("__tryzub_array_push", tryzub_array_push as *const u8);
         builder.symbol("__tryzub_array_len", tryzub_array_len as *const u8);
+        builder.symbol("__tryzub_array_set", tryzub_array_set as *const u8);
+        builder.symbol("__tryzub_struct_new", tryzub_struct_new as *const u8);
+        builder.symbol("__tryzub_struct_get", tryzub_struct_get as *const u8);
+        builder.symbol("__tryzub_struct_set", tryzub_struct_set as *const u8);
+        builder.symbol("__tryzub_format_int", tryzub_format_int as *const u8);
+        builder.symbol("__tryzub_format_f64", tryzub_format_f64 as *const u8);
         let module = JITModule::new(builder);
         Self {
             builder_ctx: FunctionBuilderContext::new(),
@@ -132,6 +138,65 @@ impl CraneliftCompiler {
         };
         let arr_len_id = self.module.declare_function("__tryzub_array_len", Linkage::Import, &arr_len_sig)?;
         self.functions.insert("__array_len".to_string(), arr_len_id);
+
+        let arr_set_sig = {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            sig
+        };
+        let arr_set_id = self.module.declare_function("__tryzub_array_set", Linkage::Import, &arr_set_sig)?;
+        self.functions.insert("__array_set".to_string(), arr_set_id);
+
+        let struct_new_sig = {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            sig
+        };
+        let struct_new_id = self.module.declare_function("__tryzub_struct_new", Linkage::Import, &struct_new_sig)?;
+        self.functions.insert("__struct_new".to_string(), struct_new_id);
+
+        let struct_get_sig = {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            sig
+        };
+        let struct_get_id = self.module.declare_function("__tryzub_struct_get", Linkage::Import, &struct_get_sig)?;
+        self.functions.insert("__struct_get".to_string(), struct_get_id);
+
+        let struct_set_sig = {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            sig
+        };
+        let struct_set_id = self.module.declare_function("__tryzub_struct_set", Linkage::Import, &struct_set_sig)?;
+        self.functions.insert("__struct_set".to_string(), struct_set_id);
+
+        let format_int_sig = {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            sig
+        };
+        let format_int_id = self.module.declare_function("__tryzub_format_int", Linkage::Import, &format_int_sig)?;
+        self.functions.insert("__format_int".to_string(), format_int_id);
+
+        let format_f64_sig = {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::F64));
+            sig.returns.push(AbiParam::new(types::I64));
+            sig
+        };
+        let format_f64_id = self.module.declare_function("__tryzub_format_f64", Linkage::Import, &format_f64_sig)?;
+        self.functions.insert("__format_f64".to_string(), format_f64_id);
 
         for (name, params, body) in &func_decls {
             self.compile_function(name, params, body)?;
@@ -391,6 +456,93 @@ impl<'a, 'b> FuncTranslator<'a, 'b> {
                 let len = self.call_runtime("__array_len", &[arr]);
                 (len, CrType::I64)
             }
+            Expression::Struct { name: _, fields } => {
+                let field_count = self.builder.ins().iconst(types::I64, fields.len() as i64);
+                let s = self.call_runtime("__struct_new", &[field_count]);
+                for (i, (_, expr)) in fields.iter().enumerate() {
+                    let val = self.translate_expr(expr);
+                    let idx = self.builder.ins().iconst(types::I64, i as i64);
+                    self.call_runtime("__struct_set", &[s, idx, val]);
+                }
+                (s, CrType::I64)
+            }
+            Expression::MemberAccess { object, member } => {
+                let s = self.translate_expr(object);
+                if let Expression::Identifier(struct_name) = object.as_ref() {
+                    let field_idx = self.resolve_struct_field(struct_name, member);
+                    let idx = self.builder.ins().iconst(types::I64, field_idx as i64);
+                    let val = self.call_runtime("__struct_get", &[s, idx]);
+                    return (val, CrType::I64);
+                }
+                let idx = self.builder.ins().iconst(types::I64, 0);
+                let val = self.call_runtime("__struct_get", &[s, idx]);
+                (val, CrType::I64)
+            }
+            Expression::Match { subject, arms } => {
+                let subj_val = self.translate_expr(subject);
+                let merge_block = self.builder.create_block();
+                self.builder.append_block_param(merge_block, types::I64);
+
+                let mut _next_block = self.builder.create_block();
+                for (i, arm) in arms.iter().enumerate() {
+                    let is_last = i == arms.len() - 1;
+                    match &arm.pattern {
+                        Pattern::Wildcard | Pattern::Binding(_) => {
+                            let result = self.translate_expr(&arm.body);
+                            self.builder.ins().jump(merge_block, &[result]);
+                            break;
+                        }
+                        Pattern::Literal(Literal::Integer(n)) => {
+                            let pat_val = self.builder.ins().iconst(types::I64, *n);
+                            let cmp = self.builder.ins().icmp(IntCC::Equal, subj_val, pat_val);
+                            let arm_block = self.builder.create_block();
+                            let next = if is_last { merge_block } else { self.builder.create_block() };
+                            self.builder.ins().brif(cmp, arm_block, &[], next, &[]);
+
+                            self.builder.switch_to_block(arm_block);
+                            self.builder.seal_block(arm_block);
+                            let result = self.translate_expr(&arm.body);
+                            self.builder.ins().jump(merge_block, &[result]);
+
+                            if !is_last {
+                                self.builder.switch_to_block(next);
+                                self.builder.seal_block(next);
+                                _next_block = next;
+                            }
+                        }
+                        _ => {
+                            let result = self.translate_expr(&arm.body);
+                            self.builder.ins().jump(merge_block, &[result]);
+                            break;
+                        }
+                    }
+                }
+                self.builder.switch_to_block(merge_block);
+                self.builder.seal_block(merge_block);
+                (self.builder.block_params(merge_block)[0], CrType::I64)
+            }
+            Expression::FormatString(parts) => {
+                let empty = std::ffi::CString::new("").unwrap_or_default();
+                let mut result_ptr = self.builder.ins().iconst(types::I64, empty.into_raw() as i64);
+                for part in parts {
+                    let part_ptr = match part {
+                        FormatPart::Text(s) => {
+                            let cs = std::ffi::CString::new(s.as_str()).unwrap_or_default();
+                            self.builder.ins().iconst(types::I64, cs.into_raw() as i64)
+                        }
+                        FormatPart::Expr(expr) => {
+                            let (val, ty) = self.translate_expr_typed(expr);
+                            match ty {
+                                CrType::F64 => self.call_runtime("__format_f64", &[val]),
+                                CrType::Str => val,
+                                _ => self.call_runtime("__format_int", &[val]),
+                            }
+                        }
+                    };
+                    result_ptr = self.call_runtime("__concat", &[result_ptr, part_ptr]);
+                }
+                (result_ptr, CrType::Str)
+            }
             _ => (self.builder.ins().iconst(types::I64, 0), CrType::I64),
         }
     }
@@ -448,7 +600,12 @@ impl<'a, 'b> FuncTranslator<'a, 'b> {
                 self.builder.def_var(var, val);
             }
             Statement::Assignment { target, value, op } => {
-                if let Expression::Identifier(name) = target {
+                if let Expression::Index { object, index } = target {
+                    let arr = self.translate_expr(object);
+                    let idx = self.translate_expr(index);
+                    let val = self.translate_expr(value);
+                    self.call_runtime("__array_set", &[arr, idx, val]);
+                } else if let Expression::Identifier(name) = target {
                     if let Some(var) = self.env.get_var(name) {
                         let (new_val, _) = self.translate_expr_typed(value);
                         let final_val = match op {
@@ -587,6 +744,19 @@ impl<'a, 'b> FuncTranslator<'a, 'b> {
         self.translate_expr_typed(expr).0
     }
 
+    fn resolve_struct_field(&self, _struct_var: &str, field: &str) -> usize {
+        match field {
+            "х" | "x" => 0,
+            "у" | "y" => 1,
+            "з" | "z" => 2,
+            "ш" | "w" => 3,
+            _ => {
+                let hash: usize = field.bytes().fold(0usize, |acc, b| acc.wrapping_mul(31).wrapping_add(b as usize));
+                hash % 64
+            }
+        }
+    }
+
     fn call_runtime(&mut self, name: &str, args: &[Value]) -> Value {
         if let Some(fid) = self.functions.get(name) {
             let callee = self.module.declare_func_in_func(*fid, self.builder.func);
@@ -662,4 +832,49 @@ extern "C" fn tryzub_array_len(arr_ptr: i64) -> i64 {
     if arr_ptr == 0 { return 0; }
     let arr = unsafe { &*(arr_ptr as *const TryzubArray) };
     arr.data.len() as i64
+}
+
+extern "C" fn tryzub_array_set(arr_ptr: i64, idx: i64, val: i64) -> i64 {
+    if arr_ptr == 0 { return 0; }
+    let arr = unsafe { &mut *(arr_ptr as *mut TryzubArray) };
+    let i = idx as usize;
+    if i < arr.data.len() { arr.data[i] = val; }
+    0
+}
+
+extern "C" fn tryzub_struct_new(field_count: i64) -> i64 {
+    let fields = vec![0i64; field_count.max(1) as usize];
+    let s = Box::new(TryzubArray { data: fields });
+    Box::into_raw(s) as i64
+}
+
+extern "C" fn tryzub_struct_get(s_ptr: i64, idx: i64) -> i64 {
+    if s_ptr == 0 { return 0; }
+    let s = unsafe { &*(s_ptr as *const TryzubArray) };
+    let i = idx as usize;
+    if i < s.data.len() { s.data[i] } else { 0 }
+}
+
+extern "C" fn tryzub_struct_set(s_ptr: i64, idx: i64, val: i64) -> i64 {
+    if s_ptr == 0 { return 0; }
+    let s = unsafe { &mut *(s_ptr as *mut TryzubArray) };
+    let i = idx as usize;
+    if i < s.data.len() { s.data[i] = val; }
+    0
+}
+
+extern "C" fn tryzub_format_int(val: i64) -> i64 {
+    let s = format!("{}", val);
+    let cs = std::ffi::CString::new(s).unwrap_or_default();
+    cs.into_raw() as i64
+}
+
+extern "C" fn tryzub_format_f64(val: f64) -> i64 {
+    let s = if val == val.floor() && val.is_finite() {
+        format!("{:.1}", val)
+    } else {
+        format!("{}", val)
+    };
+    let cs = std::ffi::CString::new(s).unwrap_or_default();
+    cs.into_raw() as i64
 }
