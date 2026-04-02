@@ -10,6 +10,8 @@ use std::fs;
 
 #[cfg(feature = "cranelift-backend")]
 mod cranelift_backend;
+#[cfg(feature = "cranelift-backend")]
+mod cranelift_aot;
 
 #[derive(Parser)]
 #[command(name = "tryzub")]
@@ -164,6 +166,10 @@ enum Commands {
         /// Компілювати як bootable OS kernel image
         #[arg(long = "ядро", default_value = "false")]
         kernel: bool,
+
+        /// Cranelift AOT компіляція в standalone бінарник
+        #[arg(long = "cranelift", default_value = "false")]
+        cranelift_aot: bool,
     },
 
     /// Показати версію та інформацію
@@ -221,7 +227,7 @@ fn main() {
         Commands::Update => run_update(),
         Commands::Run { file, fast, jit, cranelift, args } => run_file(file, fast, jit, cranelift, args),
         Commands::Watch { file } => watch_file(file),
-        Commands::Compile { file, output, native, kernel } => compile_file(file, output, native, kernel),
+        Commands::Compile { file, output, native, kernel, cranelift_aot } => compile_file(file, output, native, kernel, cranelift_aot),
         Commands::Check { file } => check_file(file),
         Commands::Test { file } => run_tests(file),
         Commands::New { name } => create_project(name),
@@ -436,7 +442,7 @@ fn run_file(file: PathBuf, fast: bool, jit: bool, cranelift: bool, args: Vec<Str
     }
 }
 
-fn compile_file(file: PathBuf, output: Option<PathBuf>, native: bool, kernel: bool) -> Result<()> {
+fn compile_file(file: PathBuf, output: Option<PathBuf>, native: bool, kernel: bool, cranelift_aot_flag: bool) -> Result<()> {
     let source = fs::read_to_string(&file)
         .map_err(|e| anyhow::anyhow!("Не вдалося прочитати {:?}: {}", file, e))?;
 
@@ -452,6 +458,20 @@ fn compile_file(file: PathBuf, output: Option<PathBuf>, native: bool, kernel: bo
         println!("Ядро скомпільовано: {} ({} байт)", out_name.display(), size);
         println!("Запустити: qemu-system-x86_64 -drive format=raw,file={}", out_name.display());
         return Ok(());
+    }
+
+    if cranelift_aot_flag {
+        #[cfg(feature = "cranelift-backend")]
+        {
+            let out_name = output.unwrap_or_else(|| PathBuf::from(&stem));
+            let start = std::time::Instant::now();
+            cranelift_aot::compile_and_link(&_ast, &out_name.to_string_lossy())?;
+            let elapsed = start.elapsed();
+            println!("  Компіляція: {:.1}мс", elapsed.as_secs_f64() * 1000.0);
+            return Ok(());
+        }
+        #[cfg(not(feature = "cranelift-backend"))]
+        return Err(anyhow::anyhow!("Cranelift не ввімкнено. Зберіть з: cargo build --features cranelift-backend"));
     }
 
     if native {
