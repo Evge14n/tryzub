@@ -22,6 +22,8 @@ impl CraneliftCompiler {
         let isa = isa_builder.finish(settings::Flags::new(flag_builder)).unwrap();
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
         builder.symbol("__tryzub_print", tryzub_print_i64 as *const u8);
+        builder.symbol("__tryzub_print_f64", tryzub_print_f64 as *const u8);
+        builder.symbol("__tryzub_print_str", tryzub_print_str as *const u8);
         let module = JITModule::new(builder);
         Self {
             builder_ctx: FunctionBuilderContext::new(),
@@ -58,6 +60,25 @@ impl CraneliftCompiler {
         };
         let print_id = self.module.declare_function("__tryzub_print", Linkage::Import, &print_sig)?;
         self.functions.insert("друк".to_string(), print_id);
+
+        let print_f64_sig = {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::F64));
+            sig.returns.push(AbiParam::new(types::I64));
+            sig
+        };
+        let print_f64_id = self.module.declare_function("__tryzub_print_f64", Linkage::Import, &print_f64_sig)?;
+        self.functions.insert("__друк_дрб".to_string(), print_f64_id);
+
+        let print_str_sig = {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            sig
+        };
+        let print_str_id = self.module.declare_function("__tryzub_print_str", Linkage::Import, &print_str_sig)?;
+        self.functions.insert("__друк_рядок".to_string(), print_str_id);
 
         for (name, params, body) in &func_decls {
             self.compile_function(name, params, body)?;
@@ -123,13 +144,17 @@ impl CraneliftCompiler {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum CrType { I64, F64, Str }
+
 struct FuncEnv {
     vars: HashMap<String, Variable>,
+    var_types: HashMap<String, CrType>,
     next_var: usize,
 }
 
 impl FuncEnv {
-    fn new() -> Self { Self { vars: HashMap::new(), next_var: 0 } }
+    fn new() -> Self { Self { vars: HashMap::new(), var_types: HashMap::new(), next_var: 0 } }
 
     fn declare_var(&mut self, name: &str) -> Variable {
         if let Some(v) = self.vars.get(name) { return *v; }
@@ -139,8 +164,18 @@ impl FuncEnv {
         var
     }
 
+    fn declare_var_typed(&mut self, name: &str, ty: CrType) -> Variable {
+        let var = self.declare_var(name);
+        self.var_types.insert(name.to_string(), ty);
+        var
+    }
+
     fn get_var(&self, name: &str) -> Option<Variable> {
         self.vars.get(name).copied()
+    }
+
+    fn get_type(&self, name: &str) -> CrType {
+        self.var_types.get(name).copied().unwrap_or(CrType::I64)
     }
 }
 
@@ -158,7 +193,7 @@ impl<'a, 'b> FuncTranslator<'a, 'b> {
             if self.returned { return; }
             if i == stmts.len() - 1 {
                 if let Statement::Expression(expr) = stmt {
-                    let val = self.translate_expr(expr);
+                    let (val, _ty) = self.translate_expr_typed(expr);
                     self.builder.ins().return_(&[val]);
                     self.returned = true;
                     return;
@@ -168,11 +203,147 @@ impl<'a, 'b> FuncTranslator<'a, 'b> {
         }
     }
 
+    fn translate_expr_typed(&mut self, expr: &Expression) -> (Value, CrType) {
+        match expr {
+            Expression::Literal(Literal::Float(f)) => {
+                (self.builder.ins().f64const(*f), CrType::F64)
+            }
+            Expression::Literal(Literal::Integer(n)) => {
+                (self.builder.ins().iconst(types::I64, *n), CrType::I64)
+            }
+            Expression::Literal(Literal::Bool(b)) => {
+                (self.builder.ins().iconst(types::I64, *b as i64), CrType::I64)
+            }
+            Expression::Literal(Literal::String(s)) => {
+                let cstr = std::ffi::CString::new(s.as_str()).unwrap_or_default();
+                let ptr_val = cstr.into_raw() as i64;
+                let ptr = self.builder.ins().iconst(types::I64, ptr_val);
+                (ptr, CrType::Str)
+            }
+            Expression::Identifier(name) => {
+                let ty = self.env.get_type(name);
+                if let Some(var) = self.env.get_var(name) {
+                    (self.builder.use_var(var), ty)
+                } else {
+                    (self.builder.ins().iconst(types::I64, 0), CrType::I64)
+                }
+            }
+            Expression::Binary { left, op, right } => {
+                let (lhs, lty) = self.translate_expr_typed(left);
+                let (rhs, rty) = self.translate_expr_typed(right);
+                if lty == CrType::F64 || rty == CrType::F64 {
+                    let fl = if lty == CrType::I64 { self.builder.ins().fcvt_from_sint(types::F64, lhs) } else { lhs };
+                    let fr = if rty == CrType::I64 { self.builder.ins().fcvt_from_sint(types::F64, rhs) } else { rhs };
+                    match op {
+                        BinaryOp::Add => (self.builder.ins().fadd(fl, fr), CrType::F64),
+                        BinaryOp::Sub => (self.builder.ins().fsub(fl, fr), CrType::F64),
+                        BinaryOp::Mul => (self.builder.ins().fmul(fl, fr), CrType::F64),
+                        BinaryOp::Div => (self.builder.ins().fdiv(fl, fr), CrType::F64),
+                        BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
+                            let cc = match op {
+                                BinaryOp::Eq => FloatCC::Equal,
+                                BinaryOp::Ne => FloatCC::NotEqual,
+                                BinaryOp::Lt => FloatCC::LessThan,
+                                BinaryOp::Le => FloatCC::LessThanOrEqual,
+                                BinaryOp::Gt => FloatCC::GreaterThan,
+                                _ => FloatCC::GreaterThanOrEqual,
+                            };
+                            let c = self.builder.ins().fcmp(cc, fl, fr);
+                            (self.builder.ins().uextend(types::I64, c), CrType::I64)
+                        }
+                        _ => (self.builder.ins().iconst(types::I64, 0), CrType::I64),
+                    }
+                } else {
+                    (self.translate_int_binary(lhs, rhs, op), CrType::I64)
+                }
+            }
+            Expression::Unary { op, operand } => {
+                let (val, ty) = self.translate_expr_typed(operand);
+                match op {
+                    UnaryOp::Neg => {
+                        if ty == CrType::F64 {
+                            (self.builder.ins().fneg(val), CrType::F64)
+                        } else {
+                            (self.builder.ins().ineg(val), CrType::I64)
+                        }
+                    }
+                    UnaryOp::Not => {
+                        let zero = self.builder.ins().iconst(types::I64, 0);
+                        let cmp_val = if ty == CrType::F64 {
+                            self.builder.ins().fcvt_to_sint(types::I64, val)
+                        } else { val };
+                        let c = self.builder.ins().icmp(IntCC::Equal, cmp_val, zero);
+                        (self.builder.ins().uextend(types::I64, c), CrType::I64)
+                    }
+                    _ => (val, ty),
+                }
+            }
+            Expression::Call { callee, args } => {
+                if let Expression::Identifier(name) = callee.as_ref() {
+                    if name == "друк" && args.len() == 1 {
+                        let (val, ty) = self.translate_expr_typed(&args[0]);
+                        match ty {
+                            CrType::F64 => {
+                                if let Some(fid) = self.functions.get("__друк_дрб") {
+                                    let callee = self.module.declare_func_in_func(*fid, self.builder.func);
+                                    let call = self.builder.ins().call(callee, &[val]);
+                                    return (self.builder.inst_results(call)[0], CrType::I64);
+                                }
+                            }
+                            CrType::Str => {
+                                if let Some(fid) = self.functions.get("__друк_рядок") {
+                                    let callee = self.module.declare_func_in_func(*fid, self.builder.func);
+                                    let len = self.builder.ins().iconst(types::I64, 0);
+                                    let call = self.builder.ins().call(callee, &[val, len]);
+                                    return (self.builder.inst_results(call)[0], CrType::I64);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    if let Some(func_id) = self.functions.get(name.as_str()) {
+                        let local_callee = self.module.declare_func_in_func(*func_id, self.builder.func);
+                        let arg_vals: Vec<Value> = args.iter().map(|a| self.translate_expr(a)).collect();
+                        let call = self.builder.ins().call(local_callee, &arg_vals);
+                        return (self.builder.inst_results(call)[0], CrType::I64);
+                    }
+                }
+                (self.builder.ins().iconst(types::I64, 0), CrType::I64)
+            }
+            _ => (self.builder.ins().iconst(types::I64, 0), CrType::I64),
+        }
+    }
+
+    fn translate_int_binary(&mut self, lhs: Value, rhs: Value, op: &BinaryOp) -> Value {
+        match op {
+            BinaryOp::Add => self.builder.ins().iadd(lhs, rhs),
+            BinaryOp::Sub => self.builder.ins().isub(lhs, rhs),
+            BinaryOp::Mul => self.builder.ins().imul(lhs, rhs),
+            BinaryOp::Div => self.builder.ins().sdiv(lhs, rhs),
+            BinaryOp::Mod => self.builder.ins().srem(lhs, rhs),
+            BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
+                let cc = match op {
+                    BinaryOp::Eq => IntCC::Equal,
+                    BinaryOp::Ne => IntCC::NotEqual,
+                    BinaryOp::Lt => IntCC::SignedLessThan,
+                    BinaryOp::Le => IntCC::SignedLessThanOrEqual,
+                    BinaryOp::Gt => IntCC::SignedGreaterThan,
+                    _ => IntCC::SignedGreaterThanOrEqual,
+                };
+                let c = self.builder.ins().icmp(cc, lhs, rhs);
+                self.builder.ins().uextend(types::I64, c)
+            }
+            BinaryOp::And => self.builder.ins().band(lhs, rhs),
+            BinaryOp::Or => self.builder.ins().bor(lhs, rhs),
+            _ => self.builder.ins().iconst(types::I64, 0),
+        }
+    }
+
     fn translate_stmt(&mut self, stmt: &Statement) {
         if self.returned { return; }
         match stmt {
             Statement::Return(Some(expr)) => {
-                let val = self.translate_expr(expr);
+                let (val, _) = self.translate_expr_typed(expr);
                 self.builder.ins().return_(&[val]);
                 self.returned = true;
             }
@@ -182,22 +353,23 @@ impl<'a, 'b> FuncTranslator<'a, 'b> {
                 self.returned = true;
             }
             Statement::Expression(expr) => {
-                self.translate_expr(expr);
+                self.translate_expr_typed(expr);
             }
             Statement::Declaration(Declaration::Variable { name, value, .. }) => {
-                let var = self.env.declare_var(name);
-                self.builder.declare_var(var, types::I64);
-                let val = if let Some(expr) = value {
-                    self.translate_expr(expr)
+                let (val, ty) = if let Some(expr) = value {
+                    self.translate_expr_typed(expr)
                 } else {
-                    self.builder.ins().iconst(types::I64, 0)
+                    (self.builder.ins().iconst(types::I64, 0), CrType::I64)
                 };
+                let cl_ty = if ty == CrType::F64 { types::F64 } else { types::I64 };
+                let var = self.env.declare_var_typed(name, ty);
+                self.builder.declare_var(var, cl_ty);
                 self.builder.def_var(var, val);
             }
             Statement::Assignment { target, value, op } => {
                 if let Expression::Identifier(name) = target {
                     if let Some(var) = self.env.get_var(name) {
-                        let new_val = self.translate_expr(value);
+                        let (new_val, _) = self.translate_expr_typed(value);
                         let final_val = match op {
                             AssignmentOp::Assign => new_val,
                             AssignmentOp::AddAssign => {
@@ -226,7 +398,7 @@ impl<'a, 'b> FuncTranslator<'a, 'b> {
                 }
             }
             Statement::If { condition, then_branch, else_branch } => {
-                let cond_val = self.translate_expr(condition);
+                let cond_val = self.translate_expr_typed(condition).0;
                 let then_block = self.builder.create_block();
                 let else_block = self.builder.create_block();
                 let merge_block = self.builder.create_block();
@@ -269,7 +441,7 @@ impl<'a, 'b> FuncTranslator<'a, 'b> {
                 self.builder.ins().jump(header, &[]);
                 self.builder.switch_to_block(header);
 
-                let cond_val = self.translate_expr(condition);
+                let cond_val = self.translate_expr_typed(condition).0;
                 let cond_bool = self.builder.ins().icmp_imm(IntCC::NotEqual, cond_val, 0);
                 self.builder.ins().brif(cond_bool, body_block, &[], exit, &[]);
 
@@ -288,7 +460,7 @@ impl<'a, 'b> FuncTranslator<'a, 'b> {
             Statement::For { variable, from, to, body, .. } => {
                 let var = self.env.declare_var(variable);
                 self.builder.declare_var(var, types::I64);
-                let from_val = self.translate_expr(from);
+                let from_val = self.translate_expr_typed(from).0;
                 self.builder.def_var(var, from_val);
 
                 let header = self.builder.create_block();
@@ -298,7 +470,7 @@ impl<'a, 'b> FuncTranslator<'a, 'b> {
                 self.builder.ins().jump(header, &[]);
                 self.builder.switch_to_block(header);
 
-                let to_val = self.translate_expr(to);
+                let to_val = self.translate_expr_typed(to).0;
                 let i_val = self.builder.use_var(var);
                 let cond = self.builder.ins().icmp(IntCC::SignedLessThan, i_val, to_val);
                 self.builder.ins().brif(cond, body_block, &[], exit, &[]);
@@ -331,76 +503,30 @@ impl<'a, 'b> FuncTranslator<'a, 'b> {
     }
 
     fn translate_expr(&mut self, expr: &Expression) -> Value {
-        match expr {
-            Expression::Literal(Literal::Integer(n)) => {
-                self.builder.ins().iconst(types::I64, *n)
-            }
-            Expression::Literal(Literal::Bool(b)) => {
-                self.builder.ins().iconst(types::I64, *b as i64)
-            }
-            Expression::Identifier(name) => {
-                if let Some(var) = self.env.get_var(name) {
-                    self.builder.use_var(var)
-                } else {
-                    self.builder.ins().iconst(types::I64, 0)
-                }
-            }
-            Expression::Binary { left, op, right } => {
-                let lhs = self.translate_expr(left);
-                let rhs = self.translate_expr(right);
-                match op {
-                    BinaryOp::Add => self.builder.ins().iadd(lhs, rhs),
-                    BinaryOp::Sub => self.builder.ins().isub(lhs, rhs),
-                    BinaryOp::Mul => self.builder.ins().imul(lhs, rhs),
-                    BinaryOp::Div => self.builder.ins().sdiv(lhs, rhs),
-                    BinaryOp::Mod => self.builder.ins().srem(lhs, rhs),
-                    BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
-                        let cc = match op {
-                            BinaryOp::Eq => IntCC::Equal,
-                            BinaryOp::Ne => IntCC::NotEqual,
-                            BinaryOp::Lt => IntCC::SignedLessThan,
-                            BinaryOp::Le => IntCC::SignedLessThanOrEqual,
-                            BinaryOp::Gt => IntCC::SignedGreaterThan,
-                            BinaryOp::Ge => IntCC::SignedGreaterThanOrEqual,
-                            _ => IntCC::Equal,
-                        };
-                        let c = self.builder.ins().icmp(cc, lhs, rhs);
-                        self.builder.ins().uextend(types::I64, c)
-                    }
-                    BinaryOp::And => self.builder.ins().band(lhs, rhs),
-                    BinaryOp::Or => self.builder.ins().bor(lhs, rhs),
-                    _ => self.builder.ins().iconst(types::I64, 0),
-                }
-            }
-            Expression::Unary { op, operand } => {
-                let val = self.translate_expr(operand);
-                match op {
-                    UnaryOp::Neg => self.builder.ins().ineg(val),
-                    UnaryOp::Not => {
-                        let zero = self.builder.ins().iconst(types::I64, 0);
-                        let c = self.builder.ins().icmp(IntCC::Equal, val, zero);
-                        self.builder.ins().uextend(types::I64, c)
-                    }
-                    _ => val,
-                }
-            }
-            Expression::Call { callee, args } => {
-                if let Expression::Identifier(name) = callee.as_ref() {
-                    if let Some(func_id) = self.functions.get(name.as_str()) {
-                        let local_callee = self.module.declare_func_in_func(*func_id, self.builder.func);
-                        let arg_vals: Vec<Value> = args.iter().map(|a| self.translate_expr(a)).collect();
-                        let call = self.builder.ins().call(local_callee, &arg_vals);
-                        return self.builder.inst_results(call)[0];
-                    }
-                }
-                self.builder.ins().iconst(types::I64, 0)
-            }
-            _ => self.builder.ins().iconst(types::I64, 0),
-        }
+        self.translate_expr_typed(expr).0
     }
 }
 
 extern "C" fn tryzub_print_i64(val: i64) -> i64 {
     println!("{}", val);
+    0
+}
+
+extern "C" fn tryzub_print_f64(val: f64) -> i64 {
+    if val == val.floor() && val.is_finite() {
+        println!("{:.1}", val);
+    } else {
+        println!("{}", val);
+    }
+    0
+}
+
+extern "C" fn tryzub_print_str(ptr: i64, _len: i64) -> i64 {
+    if ptr != 0 {
+        let cstr = unsafe { std::ffi::CStr::from_ptr(ptr as *const std::ffi::c_char) };
+        if let Ok(s) = cstr.to_str() {
+            println!("{}", s);
+        }
+    }
     0
 }
